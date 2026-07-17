@@ -1,0 +1,17 @@
+---
+description: 派對呼叫字卡 UI（瑪利歐派對感）規範
+globs: "src/minigames/**/*.{vue,scss,ts}"
+alwaysApply: false
+---
+
+# 派對呼叫字卡
+
+完整規範：`docs/party-ui-callout.md`
+
+迷你遊戲的瞬間注意力文案（球權、舉球、殺球提示等）必須遵守：
+
+- **無底框**（不要實心卡片蓋住球／場中央）
+- **粗白描邊字** + `var(--color-bg)` 落影；顏色只用 design token
+- 文案短、吵、繁體中文，放該遊戲 `locales/zh-TW.ts`
+- 進場要有彈跳／overshoot；操作提示放左下，別跟呼叫字搶正中
+- 參考：`volleyball-play.vue` 的 `.volleyball-play__ball-callout`、`.volleyball-play__score-fx`、`.volleyball-play__teammate-set`

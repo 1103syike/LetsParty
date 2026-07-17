@@ -1,0 +1,39 @@
+---
+description: 派對流程、PeerJS 連線、皇冠計分
+globs: "src/{party,common/peer,stores,locales}/**"
+alwaysApply: false
+---
+
+# 派對與連線風格
+
+## 狀態分層
+
+- **XState** `party/party-machine/party-machine.ts`（一檔能寫完就不拆）
+- **Pinia** `stores/party-store.ts`：participants、settings、roundIndex
+- 高頻 `PlayerInput` 不進 store
+
+## CPU
+
+- 開始派對：`4 - 真人數` 補 CPU，Host 端運算
+- 邏輯可放在 `party/cpu/cpu.ts`；不必拆 fill / brain 除非過重
+
+## Peer
+
+- 訊息型別：`types/peer-messages.ts`
+- 協定 type 字串用常數，不是給使用者看的文案
+
+## 皇冠
+
+- `RoundResult` 統一：更新 `crownCount`、檢查 `>= targetCrowns`、決勝
+- 結算 UI 文案 → `locales/zh-TW/party.ts`
+
+## locales 結構（保持簡單）
+
+```
+src/locales/zh-TW/
+  lobby.ts
+  party.ts
+  common.ts
+```
+
+- 第一版 **繁體中文單語** 即可；不加 vue-i18n，不加 `formatCopy` helper，直到真的需要

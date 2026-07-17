@@ -1,0 +1,391 @@
+---
+description: 派對遊戲專案核心規範（架構、命名、通用原則）
+alwaysApply: true
+---
+
+# 派對遊戲 — 核心代碼風格
+
+## 技術棧
+
+Vue 3 + TypeScript + Vite + Pinia + XState + Babylon.js + PeerJS + **SCSS**（不用 Tailwind）。
+
+## 引號與格式（Prettier 對齊）
+
+| 位置 | 引號 | 例 |
+|------|------|-----|
+| `.ts` / `<script>` 字串 | **單引號** `'` | `const id = 'party-host';` |
+| Vue `<template>` 屬性值 | **雙引號** `"` | `<button class="btn">` |
+| 字串含 `'` 時 | 改雙引號或跳脫 | `"it's ok"` 或 `'it\'s ok'` |
+| `import` 路徑 | 單引號 | `from '@/party/roster/roster'` |
+| JSON | 雙引號（語法要求） | — |
+
+- 結尾 **分號** 要加
+- 縮排 **2 空格**
+- 尾隨逗號 **es5**（多行 object/array 最後一項加逗號）
+
+## import 排序
+
+依 **import 來源路徑字母順序（A→Z）** 排列；分三段，段與段之間空一行：
+
+1. **外部套件**（`vue`、`pinia`、`@babylonjs/*`…）
+2. **`@/` 別名**（專案內）
+3. **相對路徑**（`./`、`../`）
+
+同一路徑合併為一行；`type` 與 value 可寫在一起。
+
+```typescript
+import { computed, onUnmounted } from 'vue';
+
+import { lobbyCopy } from '@/locales/zh-TW/lobby';
+import { usePartyStore } from '@/stores/party-store';
+import type { Participant } from '@/types/participant';
+```
+
+- **禁止** 無規律亂序 import
+- 用量大再考慮 `eslint-plugin-simple-import-sort`；在此之前手動遵守
+
+## 語言：僅繁體中文
+
+專案內所有中文 **一律繁體（zh-TW）**，禁止簡體混用。
+
+| 範圍 | 要求 |
+|------|------|
+| 程式註解 | 繁體中文 |
+| `locales/zh-TW/` 文案 | 繁體中文 |
+| UI 顯示文字 | 繁體中文（只放 locales） |
+| Cursor rules / 說明 | 繁體中文 |
+| 與使用者溝通 | 繁體中文 |
+
+- ❌ 簡體：`软件`、`布局`、`单独`、`注释`、`默认`、`生成`
+- ✅ 繁體：`軟體`、`佈局`、`單獨`、`註解`、`預設`、`產生`
+- 技術識別符（變數名、API、log key）維持英文
+- 之後若加 `en-US`，也 **不** 用簡體中文 locale
+
+## 註解
+
+- **繁體中文**；只解釋「為什麼」或非 obvious 的業務／協定
+- 不唸 code、不寫顯而易見的註解
+- 公開 API（export 函式、MiniGame 契約）可一行中文說明用途
+
+## 輕量優先（不要一開始做很重）
+
+- **YAGNI**：沒有第二個使用者前，不加 vue-i18n、不加 design token 大全、不加一堆 SCSS partial
+- 文案先用 `locales/zh-TW/*.ts` 的 `copy` 物件；**重複多、要換語系** 再考慮 i18n 套件
+- SCSS：`_variables.scss` 為唯一數值來源；utility 對照 token，不額外發明 px/hex
+- 規範跟著專案長，不要預建用不到的抽象層
+
+## 文案（禁止硬編在邏輯裡）
+
+- 使用者看得見的字 → `src/locales/zh-TW/`（**繁體中文** `xxxCopy` + `as const`）
+- 動態字串先用 template literal 在 locale 定義；**真的到處都在替換** 再抽 `formatCopy`
+- 例外：Peer key、CSS class、路由 path、`console` 除錯
+
+## 檔案粒度：不要過度拆分
+
+- **預設寫在同一檔**，從上往下能讀完就別拆
+- 只有以下情況才拆檔：
+  - 單檔 **明顯過長**（約 **200+ 行**）且能按責任切開
+  - 要給多處 reuse 的邏輯
+  - 測試需要 mock 的邊界（有寫 spec 時）
+- **禁止**為了「乾淨」拆出只有幾行的 helper / type-only 檔
+- CPU 邏輯、結算邏輯若 < 80 行，留在同一 minigame 主檔即可
+
+## 目錄：一個模組一個資料夾
+
+同一層 **不要** 堆很多同類 `.ts`（例如 `foo-a.ts`、`foo-b.ts`、`bar-c.ts`）。
+
+```
+// ❌ 同一資料夾塞多種職責
+party/scoring/crown.ts
+party/scoring/rank.ts
+party/scoring/tie-break.ts
+
+// ✅ 各模組自有子資料夾（裡面可以只有一個主檔）
+party/scoring/crown/crown.ts
+party/scoring/rank/rank.ts
+
+// ✅ 更精簡：相關且不重，合併成一檔
+party/scoring/scoring.ts
+```
+
+Mini-Game 範例：
+
+```
+src/minigames/mash-button/
+  mash-button.ts      # 主實作（含 CPU，直到過重再拆）
+  index.ts            # 只 export definition
+  locales/            # 可選：該遊戲專用文案
+    zh-TW.ts
+```
+
+## 目錄與 import 方向
+
+```
+src/common/      ← peer、input、constants，無 UI
+src/styles/      ← main.scss、_utilities.scss（用到再加）、_variables.scss
+src/locales/     ← 所有使用者文案
+src/party/       ← 派對流程、皇冠、CPU、狀態機
+src/minigames/   ← 各 Mini-Game，彼此不可互 import
+src/components/  ← 純 UI，無業務
+src/composables/
+src/stores/
+src/pages/
+src/types/
+```
+
+- `minigames/` → `common/`、`types/`、`locales/`、`composables/`、`components/`
+- `components/` 不可 import `party/`、`minigames/`、`stores/` 業務
+- 協定 key、enum 用 `as const`，禁止散落 magic string
+
+## 命名
+
+| 類型 | 規則 | 例 |
+|------|------|-----|
+| 檔名 | kebab-case + 後綴 | `party-store.ts`、`mash-button.ts` |
+| 資料夾 | kebab-case | `fill-slots/`、`rock-paper-scissors/` |
+| 元件 | PascalCase | `VirtualJoystick.vue` |
+| composable | `use` + camelCase | `usePeerConnection.ts` |
+| 型別 | PascalCase | `Participant`、`MiniGameDefinition` |
+| boolean | is/has/can | `isHost`、`hasReachedTargetCrowns` |
+| 常數 | UPPER_SNAKE | `PARTY_PLAYER_COUNT` |
+| locale 物件 | camelCase + `Copy` | `lobbyCopy` |
+| **CSS class** | **functional：一 class 一功能** | `flex`、`gap-md`、`text-center` |
+
+## 生成 UI / 樣式時（必遵守）
+
+**禁止隨機填數值。** 字級、字體、padding、margin、gap、顏色 **只能** 用下方 token 表與 `_utilities.scss` 已有 class。
+
+| 情況 | 做法 |
+|------|------|
+| token / utility 表裡有 | 直接用 |
+| 表裡沒有、需求不明 | **先問使用者**，不要自創 `13px`、`#3a7bd5` |
+| 需要新 token | 問過、更新 `_variables.scss` 後再用 |
+
+- ❌ `padding: 15px`、`font-size: 17px`、`color: #ff6b6b`、`gap: 10px`
+- ✅ `class="pad-md gap-sm text-md"`、`var(--color-accent)`
+
+---
+
+## SCSS：Functional CSS 優先
+
+**少 class、少規則；每一條 CSS 都必須有明確用途。** 不要為「可能以後會用到」或純裝飾而加樣式。
+
+### Design tokens（`_variables.scss` 唯一來源）
+
+Phase 1 建專案時建立；**生成程式碼只允許用此表**（要改表先跟使用者確認）。
+
+**字體**
+
+| Token | 值 |
+|-------|-----|
+| `--font-family-base` | `'system-ui', -apple-system, 'Segoe UI', sans-serif` |
+| `--font-size-xs` | `0.75rem`（12px） |
+| `--font-size-sm` | `0.875rem`（14px） |
+| `--font-size-md` | `1rem`（16px） |
+| `--font-size-lg` | `1.25rem`（20px） |
+| `--font-size-xl` | `1.5rem`（24px） |
+| `--font-size-2xl` | `2rem`（32px） |
+| `--font-weight-normal` | `400` |
+| `--font-weight-bold` | `700` |
+| `--line-height-tight` | `1.25` |
+| `--line-height-normal` | `1.5` |
+
+Utility：`text-xs` … `text-2xl`、`font-bold`、`text-center`
+
+**間距**（padding / margin / gap 共用同一尺度）
+
+| Token | 值 | Utility 範例 |
+|-------|-----|--------------|
+| `--space-xs` | `4px` | `gap-xs`、`pad-xs`、`mt-xs` |
+| `--space-sm` | `8px` | `gap-sm`、`pad-sm` |
+| `--space-md` | `16px` | `gap-md`、`pad-md` |
+| `--space-lg` | `24px` | `gap-lg`、`pad-lg` |
+| `--space-xl` | `32px` | `gap-xl`、`pad-xl` |
+
+- margin 用 `mt-*` / `mb-*` / `my-*`；**禁止** token 表以外的 px
+- 需要 `space-xxl` 等：**先問**
+
+**顏色**（第一版預設；要換主題 **先問**）
+
+| Token | 用途 | 預設值 |
+|-------|------|--------|
+| `--color-bg` | 頁面背景 | `#1a1a2e` |
+| `--color-surface` | 卡片 / 面板 | `#16213e` |
+| `--color-text` | 主文字 | `#eaeaea` |
+| `--color-text-muted` | 次要文字 | `#a0a0a0` |
+| `--color-accent` | 主按鈕 / 強調 | `#e94560` |
+| `--color-on-accent` | accent 上的字 | `#ffffff` |
+| `--color-border` | 邊框 | `#2a2a4a` |
+| `--color-success` | 成功 | `#4ade80` |
+| `--color-warning` | 警告 | `#fbbf24` |
+| `--color-player-1` … `4` | 四位玩家色 | 待視覺確認時 **先問** |
+
+- **禁止** 在元件寫死 hex；只用 `var(--color-*)`
+- 新顏色：**先問**，再加入 `_variables.scss`
+
+### 寫法優先順序
+
+1. **全域 functional utility**（`src/styles/_utilities.scss`）— 一個 class 只做一件事
+2. **模板組合** 多個 utility：`class="flex flex-col gap-md items-center"`
+3. **元件 `<style scoped>`** — 只放 utility 無法表達的（唯一外觀、`:hover`、子選擇器、動畫）
+
+```vue
+<template>
+  <section class="flex flex-col gap-md pad-lg">
+    <ul class="flex gap-sm">
+      <li v-for="p in participants" :key="p.id" class="flex items-center gap-xs">
+        ...
+      </li>
+    </ul>
+    <button type="button" class="btn-primary full-width" :disabled="!isReady" @click="emit('start')">
+      {{ lobbyCopy.startParty }}
+    </button>
+  </section>
+</template>
+
+<style lang="scss" scoped>
+/* 只有 utility 做不到才寫，例如主按鈕品牌色 */
+.btn-primary {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+
+  &:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+}
+</style>
+```
+
+### Functional utility 命名
+
+- **功能描述**：`flex`、`flex-col`、`items-center`
+- 間距 / 字級：**只對應 token 表**（見上）
+- 寬高：`full-width`、`full-height`
+- utility **對照 token 實作**，例如 `.gap-md { gap: var(--space-md); }`
+- 表裡沒有的尺寸 class：**先問**，不要現寫
+
+### 檔案（第一版）
+
+```
+src/styles/
+  main.scss           # reset + import variables、utilities
+  _variables.scss     # 上表 token（唯一數值來源）
+  _utilities.scss     # functional class，對照 variables
+```
+
+- `main.ts` 只 import 一次 `main.scss`
+- utility **隨需求新增**，但每個必須對應已有 token
+- **不要** 預建 `_mixins`、tokens 子目錄
+
+### 每一條 CSS 都要能回答「為什麼需要」
+
+- ❌ 複製貼上但沒用到的規則
+- ❌ 父層 `padding` 夠了子層又 `margin` 做同一件事
+- ❌ 只改顏色卻新建 `.red-box` 或隨便寫 hex
+- ❌ 堆語意 wrapper class 或為包 CSS 多一層 div
+- ✅ 這個按鈕需要 disabled 樣式 → 寫在 `.btn-primary:disabled`
+- ✅ 三個畫面都要相同 gap → `.gap-md`（`--space-md`）
+
+### 其他
+
+- 巢狀 **最多 3 層**
+- 不用 Tailwind、不用 `@apply`
+- inline `style` 僅限 JS 動態值（座標、百分比）
+- 禁止 `!important`（除非覆蓋第三方且註明原因）
+
+## 測試
+
+- **不強制** `.spec.ts`；有意義才寫（複雜結算、狀態機轉換）
+- 不為了覆蓋率寫假測試
+
+## 協作：拆分工作與進度回報
+
+實作或改較大任務時，**先拆步驟、做完回報、標明下一步**。
+
+### 怎麼拆
+
+- 依計畫 **Phase** 拆；Phase 內再拆 **可驗收的小步**（每步約 1 個明確結果）
+- 一步做完能跑 / 能看 / 能測，再進下一步
+- 不一次開 5 個無關檔案；**當前步驟完成再回報**
+
+### 每次回報格式（繁體中文）
+
+```
+## 進度
+- [x] 已完成 …
+- [ ] 進行中 …（若有的話）
+
+## 本輪做了什麼
+（1–3 句）
+
+## 下一步
+1. …
+2. …
+
+## 需要你決定（若有）
+- …
+
+## 清理檢查（大型更動時必填）
+- [ ] workaround / 遺留 TS、CSS、locales …
+```
+
+- 卡住或 token／配色／玩法未定 → 列在 **需要你決定**，不要猜
+- 長任務結束一個 Phase 再總結；不必每改一行都報
+- **大型更動**完成後，回報加一節 **清理檢查**（見下）
+
+## 更動與清理：workaround 與遺留程式碼
+
+每次修改，**尤其重構、刪檔、改名、換做法**，必須做清理檢查，不留半成品。
+
+### 什麼算大型更動
+
+- 刪除 / 重新命名檔案、元件、Mini-Game、路由
+- 換狀態流程、Peer 協定、CSS 策略（例如 BEM → functional）
+- 搬目錄、合併模組、抽離 composable
+
+### 必查：workaround
+
+搜尋並處理（能正修就正修，不能修要註明為何暫留）：
+
+- `TODO`、`FIXME`、`HACK`、`workaround`、`暫時`、`先這樣`
+- 重複邏輯（舊路徑與新路徑並存）
+- 被註解掉卻未刪的整段 code
+- 「為了修 bug 多包一層」但根因已修的結構
+
+### 必查：遺留程式碼（刪 / 改之後）
+
+| 類型 | 怎麼查 |
+|------|--------|
+| TS / Vue | 搜舊檔名、舊 export、未使用的 import；確認無引用再刪 |
+| 路由 | 舊 path 是否還在 router、連結、QR 網址 |
+| locales | 刪 UI 後，對應 `copy` key 是否成孤兒 |
+| **CSS / SCSS** | 刪 class 後搜 template 是否還引用；刪元件後搜 utility / scoped 是否無用 |
+| SCSS token | 刪 `--color-*` / `--space-*` 後搜 `var(--…)` 與對應 utility |
+| Pinia / XState | 舊 state、event、action 是否仍被引用 |
+
+- **CSS 特別注意**：rename class 時，template、scoped、`_utilities.scss` 三處要一致；不要留沒人用的 `.btn-old`、空 ruleset
+- 不確定能否刪 → **先搜尋全專案**（rg），不要留「可能以後用到」
+
+### 更動後最小檢查清單
+
+```
+[ ] 無多餘 import / 未使用變數
+[ ] 無引用已刪檔案或舊符號
+[ ] template class 與 SCSS 一致，無孤兒 style
+[ ] locales 無孤兒 key（或刻意保留要註解）
+[ ] 無只為舊版存在的 workaround（或已註明）
+[ ] dev 可跑、畫面無明顯壞版（有改 UI 時）
+```
+
+- 小型單檔修改：至少快速搜尋相關 symbol
+- 大型更動：跑完整清單並在回報寫 **清理檢查** 結果
+
+## 通用原則
+
+- 從上往下讀完；一個 function 一件事
+- 不寫 `!!`、三層 ternary、過度 reduce
+- 型別寫清楚；禁止 `any`（除非註明原因）
+- 非同步、`Peer`、鍵盤監聽 → `onUnmounted` / `dispose` 必清理
+- `computed` 勿每次回傳新 object reference
+- 改動範圍最小

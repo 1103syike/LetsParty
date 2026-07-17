@@ -1,0 +1,66 @@
+---
+description: Vue 元件與 composable 寫法
+globs: "**/*.{vue,ts}"
+alwaysApply: false
+---
+
+# Vue 元件風格
+
+## 元件結構（`<script setup lang="ts">`）
+
+順序：`import`（字母排序，見 project-core）→ `props/emits` → composables → state → computed → methods → lifecycle。
+
+```vue
+<script setup lang="ts">
+import { computed, onUnmounted } from 'vue';
+
+import { lobbyCopy } from '@/locales/zh-TW/lobby';
+import type { Participant } from '@/types/participant';
+
+const props = defineProps<{ participants: Participant[] }>();
+const emit = defineEmits<{ start: [] }>();
+
+const isReady = computed((): boolean => props.participants.length > 0);
+
+onUnmounted(() => {
+  // 離開頁面時移除 listener
+});
+</script>
+
+<template>
+  <section class="flex flex-col gap-md pad-lg">
+    <button
+      type="button"
+      class="btn-primary full-width"
+      :disabled="!isReady"
+      @click="emit('start')"
+    >
+      {{ lobbyCopy.startParty }}
+    </button>
+  </section>
+</template>
+
+<style lang="scss" scoped>
+.btn-primary {
+  /* 僅 utility 無法涵蓋的樣式 */
+}
+</style>
+```
+
+## 模板
+
+- 邏輯放 script；模板只做展示與事件
+- 文案只來自 `locales/`
+- **佈局優先**組 functional class（`flex`、`gap-md`），避免大量自訂 class
+- 能少一層 DOM 就少一層；不要為 CSS 多包無意義 div
+
+## 樣式
+
+- **只許** token 表 + `_utilities.scss`；數值、色碼不清楚 **先問使用者**
+- 佈局：`flex` + `gap-*` + `pad-*`；scoped 只補 utility 做不到的
+- 寫完後檢查有無多餘規則、有無 magic number
+
+## Composable
+
+- 一個 composable 一個責任；不重不拆檔
+- 生命週期清理封裝在 composable 內

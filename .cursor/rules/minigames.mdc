@@ -1,0 +1,56 @@
+---
+description: Mini-Game 插件實作規範
+globs: "src/minigames/**"
+alwaysApply: false
+---
+
+# Mini-Game 插件風格
+
+## 目錄（一個遊戲一個資料夾）
+
+```
+src/minigames/mash-button/
+  index.ts           # export MiniGameDefinition
+  mash-button.ts     # 主實作：instance + CPU（預設不拆）
+  locales/
+    zh-TW.ts         # 本遊戲 UI 文案（繁體中文）
+```
+
+- 在 `registry.ts` 註冊；`party/` 不用 if-else 硬選遊戲
+- **過重**（200+ 行）才拆 `mash-button-cpu.ts` 或 `mash-button-scene.ts`，且仍放在 **同一 minigame 資料夾** 內
+- 不要在 `minigames/` 根目錄平鋪 `game-1.ts`、`game-2.ts`
+
+## 必實作契約
+
+```typescript
+interface MiniGameInstance {
+  start(): void;
+  onPlayerInput(playerId: string, input: PlayerInput): void;
+  getCpuInput?(cpuId: string, deltaMs: number): PlayerInput;
+  onTick(deltaMs: number): void;
+  getRankings(): string[];
+  getCrownAwards?(rankings: string[]): Record<string, number>;
+  dispose(): void;
+}
+```
+
+- 固定 4 人；預設第 1 名 +1 皇冠
+- CPU 要有基本行為；`dispose()` 清 mesh / body / timer
+- Host 權威：排名只在 Host 算
+
+## 輸入
+
+- definition 標 `inputMode`；規則說明文字走 `locales/`
+
+## Hitbox／碰撞單位（必遵守）
+
+有移動、擊打、互撞的 Mini-Game **必須**有明確碰撞單位，禁止在邏輯裡散落 `1.15`、`0.45` 這種 magic number。
+
+| 做法 | 說明 |
+|---|---|
+| 常數集中 | 例如 `volleyball-collision.ts`、`bump-physics.ts` 的 `RADIUS`／`HITBOX_*` |
+| 命名 | `PLAYER_BODY_RADIUS`、`BALL_RADIUS`、`HITBOX_BUMP`；註解寫單位用途 |
+| 判定 | 觸球／撞擊只呼叫共用函式（如 `vbCanHitBall`），不要在多處複製距離公式 |
+| 可視化 | 調手感時改常數；需要時可暫畫 debug 球體，不要為了 debug 改判定邏輯分叉 |
+
+排球範例：`VB_PLAYER_BODY_RADIUS`、`VB_BALL_RADIUS`、`VB_HITBOX_BUMP`／`SPIKE`、高度帶 `VB_HITBOX_Y_*`。

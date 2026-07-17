@@ -1,0 +1,53 @@
+---
+description: TypeScript 型別與模組慣例
+globs: "**/*.ts"
+alwaysApply: false
+---
+
+# TypeScript 風格
+
+## 引號與 import
+
+- 字串、import 路徑：**單引號** `'`
+- import **字母排序**：外部 → `@/` → 相對路徑（見 `project-core`）
+- 別名 `@/` → `src/`
+
+## 型別放置
+
+- 跨模組 → `src/types/`
+- 只服務單一 minigame → 該 minigame 資料夾內；**不必**為 3 個 interface 單獨開 `types.ts`
+
+## 文案
+
+- 使用者字串 → `src/locales/zh-TW/*.ts`（**繁體中文**），export `xxxCopy as const`
+- 錯誤訊息給使用者看的也走 locales；技術 log 可用英文
+
+```typescript
+import { partyCopy } from '@/locales/zh-TW/party';
+```
+
+## 派對核心型別（保持一致）
+
+```typescript
+const PARTY_PLAYER_COUNT = 4 as const;
+
+type ParticipantKind = 'human' | 'cpu';
+
+interface Participant {
+  id: string;
+  displayName: string;
+  kind: ParticipantKind;
+  color: PlayerColor;
+  peerId?: string;
+  crownCount: number;
+}
+```
+
+## 錯誤與邊界
+
+- 不吞 error；Peer 斷線要有恢復或提示（文案走 locales）
+- 對外函式標註回傳型別；`async` → `Promise<T>`
+
+## 測試
+
+- **不強制**；複雜 pure function / 皇冠結算才值得 `.spec.ts`

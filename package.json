@@ -1,0 +1,29 @@
+{
+  "name": "crown-party",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "port": 3000,
+    "dev": "vite --host --open",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^6.49.0",
+    "@babylonjs/gui": "^6.49.0",
+    "@babylonjs/loaders": "^6.49.0",
+    "@xstate/vue": "^4.0.4",
+    "pinia": "^2.1.7",
+    "vue": "^3.4.21",
+    "vue-router": "^4.3.0",
+    "xstate": "^5.32.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^4.6.2",
+    "sass": "~1.77.8",
+    "typescript": "^5.4.2",
+    "vite": "^4.5.2",
+    "vue-tsc": "^2.0.6"
+  }
+}
