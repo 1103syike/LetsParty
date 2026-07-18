@@ -3,38 +3,49 @@
 export const BUMP_STAGE_RADIUS = 5.2;
 export const BUMP_ACTOR_RADIUS = 0.55;
 export const BUMP_MOVE_ACCEL = 34;
-export const BUMP_MAX_SPEED = 7.2;
+export const BUMP_MAX_SPEED = 7;
 export const BUMP_FRICTION = 0.89;
-export const BUMP_PUSH_STRENGTH = 1.55;
-export const BUMP_OUTWARD_BIAS = 1.2;
-export const BUMP_STALEMATE_SHEAR = 3.4;
-export const BUMP_FALL_MARGIN = 0.08;
-export const BUMP_SPAWN_GRACE_MS = 1800;
+export const BUMP_PUSH_STRENGTH = 1.65;
+export const BUMP_OUTWARD_BIAS = 0.85;
+export const BUMP_STALEMATE_SHEAR = 2.8;
+export const BUMP_FALL_MARGIN = 0.12;
+/** 開局站更靠中心，先推擠再搶邊緣 */
+export const BUMP_SPAWN_EDGE_PADDING = 1.65;
 
-/** 衝撞：短衝刺，沒格擋要被炸飛 */
-export const BUMP_CHARGE_DURATION_MS = 340;
-export const BUMP_CHARGE_COOLDOWN_MS = 1400;
-export const BUMP_CHARGE_SPEED = 15;
-export const BUMP_CHARGE_HIT_IMPULSE = 28;
+/**
+ * 撞擊：推人位移，不是秒殺。
+ * 要靠連續推擠把人擠到台邊才掉。
+ */
+export const BUMP_CHARGE_DURATION_MS = 220;
+export const BUMP_CHARGE_COOLDOWN_MS = 2000;
+export const BUMP_CHARGE_SPEED = 9.2;
+export const BUMP_CHARGE_HIT_IMPULSE = 10.5;
 /** 衝撞命中當幀直接彈開的距離 */
-export const BUMP_CHARGE_BLAST_POP = 2.6;
+export const BUMP_CHARGE_BLAST_POP = 0.65;
 /** 衝撞判定距離（略大於碰撞半徑，避免穿模漏判） */
-export const BUMP_CHARGE_HIT_RANGE = BUMP_ACTOR_RADIUS * 2.7;
-/** 沒格擋被衝到且偏外 → 直接判掉下 */
-export const BUMP_CHARGE_FORCE_FALL_RATIO = 0.4;
-export const BUMP_CHARGE_STUN_MS = 780;
+export const BUMP_CHARGE_HIT_RANGE = BUMP_ACTOR_RADIUS * 2.4;
+export const BUMP_CHARGE_STUN_MS = 280;
+/** 命中後往台外追加推力（刻意保守） */
+export const BUMP_CHARGE_OUTWARD_BOOST = 1.6;
 
-export const BUMP_DEFEND_MOVE_SCALE = 0.42;
-export const BUMP_DEFEND_BLOCK_FACTOR = 0.18;
-export const BUMP_STUN_MS = 520;
+/** 近邊緣時削弱往外速度，避免一撞就飛出台 */
+export const BUMP_EDGE_SOFT_RATIO = 0.7;
+export const BUMP_EDGE_OUTWARD_CUT = 0.78;
+
+export const BUMP_STUN_MS = 320;
 /** 一般互撞被頂到時的往後彈速度 */
-export const BUMP_BUMP_KNOCKBACK = 9;
+export const BUMP_BUMP_KNOCKBACK = 7.5;
 /** 硬直滑行摩擦（越接近 1 飛越遠） */
-export const BUMP_STUN_FRICTION = 0.988;
+export const BUMP_STUN_FRICTION = 0.94;
 /** 一般擊退當幀位移 */
-export const BUMP_KNOCKBACK_POP = 0.85;
+export const BUMP_KNOCKBACK_POP = 0.55;
 export const BUMP_JUMP_DURATION_MS = 520;
 export const BUMP_JUMP_COOLDOWN_MS = 280;
+
+/** CPU 開場先推擠，過幾秒才准撞擊 */
+export const BUMP_CPU_CHARGE_OPEN_MS = 4000;
+/** CPU 只在對手夠外側時才撞擊 */
+export const BUMP_CPU_CHARGE_EDGE_RATIO = 0.66;
 
 export interface BumpBody {
   id: string;
@@ -50,7 +61,6 @@ export interface BumpBody {
   isCharging: boolean;
   chargeMsLeft: number;
   chargeCooldownMs: number;
-  isDefending: boolean;
   stunMsLeft: number;
   jumpMsLeft: number;
   jumpCooldownMs: number;
@@ -60,7 +70,6 @@ export interface CpuBumpIntent {
   steer: { x: number; z: number };
   wantJump: boolean;
   wantCharge: boolean;
-  wantDefend: boolean;
 }
 
 /** 撞擊事件：給畫面播攻擊動畫／粒子 */
@@ -110,30 +119,63 @@ function pushHit(
   });
 }
 
-export function createBumpBodies(ids: string[]): BumpBody[] {
-  const count = ids.length;
+/** 四角斜對角站位（1P→4P 順時針：東北、西北、西南、東南） */
+export function getBumpCornerSpawn(index: number, count = 4): {
+  x: number;
+  z: number;
+  facingX: number;
+  facingZ: number;
+} {
+  const ring = BUMP_STAGE_RADIUS - BUMP_ACTOR_RADIUS - BUMP_SPAWN_EDGE_PADDING;
+  const angle = (index / Math.max(count, 1)) * Math.PI * 2 + Math.PI / 4;
+  const x = Math.cos(angle) * ring;
+  const z = Math.sin(angle) * ring;
+  const mag = Math.hypot(x, z) || 1;
 
+  return {
+    x,
+    z,
+    facingX: -x / mag,
+    facingZ: -z / mag,
+  };
+}
+
+export function placeBumpBodiesAtCorners(bodies: BumpBody[]): void {
+  const count = bodies.length;
+
+  bodies.forEach((body, index) => {
+    const spawn = getBumpCornerSpawn(index, count);
+    body.x = spawn.x;
+    body.z = spawn.z;
+    body.facingX = spawn.facingX;
+    body.facingZ = spawn.facingZ;
+    body.vx = 0;
+    body.vz = 0;
+    body.isCharging = false;
+    body.chargeMsLeft = 0;
+    body.stunMsLeft = 0;
+    body.jumpMsLeft = 0;
+    body.jumpCooldownMs = 0;
+  });
+}
+
+export function createBumpBodies(ids: string[]): BumpBody[] {
   return ids.map((id, index) => {
-    const angle = (index / count) * Math.PI * 2 - Math.PI / 2;
-    const ring = Math.min(2.05, BUMP_STAGE_RADIUS * 0.38);
-    const x = Math.cos(angle) * ring;
-    const z = Math.sin(angle) * ring;
-    const mag = Math.hypot(x, z) || 1;
+    const spawn = getBumpCornerSpawn(index, ids.length);
 
     return {
       id,
-      x,
-      z,
+      x: spawn.x,
+      z: spawn.z,
       vx: 0,
       vz: 0,
       alive: true,
       fallOrder: 0,
-      facingX: -x / mag,
-      facingZ: -z / mag,
+      facingX: spawn.facingX,
+      facingZ: spawn.facingZ,
       isCharging: false,
       chargeMsLeft: 0,
       chargeCooldownMs: 800 + index * 120,
-      isDefending: false,
       stunMsLeft: 0,
       jumpMsLeft: 0,
       jumpCooldownMs: 0,
@@ -188,7 +230,6 @@ export function tryStartBumpJump(body: BumpBody): boolean {
   }
 
   body.jumpMsLeft = BUMP_JUMP_DURATION_MS;
-  body.isDefending = false;
 
   return true;
 }
@@ -199,7 +240,6 @@ export function tryStartBumpCharge(body: BumpBody): boolean {
     || body.isCharging
     || body.chargeCooldownMs > 0
     || body.stunMsLeft > 0
-    || body.jumpMsLeft > 0
   ) {
     return false;
   }
@@ -207,20 +247,10 @@ export function tryStartBumpCharge(body: BumpBody): boolean {
   body.isCharging = true;
   body.chargeMsLeft = BUMP_CHARGE_DURATION_MS;
   body.chargeCooldownMs = BUMP_CHARGE_COOLDOWN_MS;
-  body.isDefending = false;
   body.vx = body.facingX * BUMP_CHARGE_SPEED;
   body.vz = body.facingZ * BUMP_CHARGE_SPEED;
 
   return true;
-}
-
-export function setBumpDefending(body: BumpBody, isDefending: boolean): void {
-  if (!body.alive || body.isCharging || body.stunMsLeft > 0 || body.jumpMsLeft > 0) {
-    body.isDefending = false;
-    return;
-  }
-
-  body.isDefending = isDefending;
 }
 
 export function applyBumpSteer(
@@ -251,22 +281,21 @@ export function applyBumpSteer(
   }
 
   const mag = Math.hypot(steerX, steerZ);
-  const moveScale = body.isDefending ? BUMP_DEFEND_MOVE_SCALE : 1;
 
   if (mag > 0.05) {
     const nx = steerX / mag;
     const nz = steerZ / mag;
     body.facingX = nx;
     body.facingZ = nz;
-    body.vx += nx * BUMP_MOVE_ACCEL * moveScale * deltaSec;
-    body.vz += nz * BUMP_MOVE_ACCEL * moveScale * deltaSec;
+    body.vx += nx * BUMP_MOVE_ACCEL * deltaSec;
+    body.vz += nz * BUMP_MOVE_ACCEL * deltaSec;
   }
 
   body.vx *= BUMP_FRICTION;
   body.vz *= BUMP_FRICTION;
 
   const speed = Math.hypot(body.vx, body.vz);
-  const maxSpeed = BUMP_MAX_SPEED * moveScale;
+  const maxSpeed = BUMP_MAX_SPEED;
 
   if (speed > maxSpeed) {
     const scale = maxSpeed / speed;
@@ -282,10 +311,6 @@ function bodyMass(body: BumpBody): number {
   const dist = Math.hypot(body.x, body.z);
   const edge = Math.min(1, dist / BUMP_STAGE_RADIUS);
   let mass = 1.2 - edge * 0.55;
-
-  if (body.isDefending) {
-    mass *= 1.45;
-  }
 
   if (body.isCharging) {
     mass *= 1.25;
@@ -312,22 +337,8 @@ function applyKnockback(
   body.z += nz * pop;
   body.isCharging = false;
   body.chargeMsLeft = 0;
-  body.isDefending = false;
   body.jumpMsLeft = 0;
   body.stunMsLeft = Math.max(body.stunMsLeft, stunMs);
-}
-
-function forceFallSoon(body: BumpBody): void {
-  const dist = Math.hypot(body.x, body.z) || 1;
-  const rx = body.x / dist;
-  const rz = body.z / dist;
-  // 直接推過邊界外側，下一幀 applyBumpFalls 會判出局
-  body.x = rx * (BUMP_STAGE_RADIUS + BUMP_FALL_MARGIN + 0.35);
-  body.z = rz * (BUMP_STAGE_RADIUS + BUMP_FALL_MARGIN + 0.35);
-  body.vx = rx * 4;
-  body.vz = rz * 4;
-  body.isCharging = false;
-  body.isDefending = false;
 }
 
 /**
@@ -460,20 +471,14 @@ export function resolveBumpCollisions(
 
       // 有明顯撞擊時：被撞的一方沿法線往後彈開（手感重點）
       if (aIntoB > 1.4 && aIntoB >= bIntoA) {
-        const strength = Math.min(
-          BUMP_BUMP_KNOCKBACK,
-          4.5 + aIntoB * 0.85,
-        ) * (b.isDefending ? BUMP_DEFEND_BLOCK_FACTOR + 0.35 : 1);
-        applyKnockback(b, nx, nz, strength, b.isDefending ? 120 : 260);
+        const strength = Math.min(BUMP_BUMP_KNOCKBACK, 4.5 + aIntoB * 0.85);
+        applyKnockback(b, nx, nz, strength, 260);
         a.vx *= 0.55;
         a.vz *= 0.55;
         pushHit(hits, a, b, 'bump');
       } else if (bIntoA > 1.4) {
-        const strength = Math.min(
-          BUMP_BUMP_KNOCKBACK,
-          4.5 + bIntoA * 0.85,
-        ) * (a.isDefending ? BUMP_DEFEND_BLOCK_FACTOR + 0.35 : 1);
-        applyKnockback(a, -nx, -nz, strength, a.isDefending ? 120 : 260);
+        const strength = Math.min(BUMP_BUMP_KNOCKBACK, 4.5 + bIntoA * 0.85);
+        applyKnockback(a, -nx, -nz, strength, 260);
         b.vx *= 0.55;
         b.vz *= 0.55;
         pushHit(hits, b, a, 'bump');
@@ -544,22 +549,8 @@ function resolveChargeHit(
   attacker.vx = -hitX * 2.4;
   attacker.vz = -hitZ * 2.4;
   attacker.stunMsLeft = Math.max(attacker.stunMsLeft, 140);
-  attacker.isDefending = false;
 
-  if (victim.isDefending) {
-    applyKnockback(
-      victim,
-      hitX,
-      hitZ,
-      BUMP_CHARGE_HIT_IMPULSE * BUMP_DEFEND_BLOCK_FACTOR,
-      180,
-      0.7,
-    );
-    attacker.stunMsLeft = Math.max(attacker.stunMsLeft, BUMP_STUN_MS);
-    return;
-  }
-
-  // 沒格擋：沿撞擊方向炸飛，並往台外再踹一腳
+  // 踢中：沿撞擊方向炸飛，並往台外再踹一腳
   const victimDist = Math.hypot(victim.x, victim.z) || 1;
   const outX = victim.x / victimDist;
   const outZ = victim.z / victimDist;
@@ -573,38 +564,37 @@ function resolveChargeHit(
     BUMP_CHARGE_STUN_MS,
     BUMP_CHARGE_BLAST_POP,
   );
-  // 再追加台外推力，確保有「被轟出去」的感覺
-  victim.vx += outX * 9;
-  victim.vz += outZ * 9;
-
-  if (victimDist >= BUMP_STAGE_RADIUS * BUMP_CHARGE_FORCE_FALL_RATIO) {
-    forceFallSoon(victim);
-  }
+  victim.vx += outX * BUMP_CHARGE_OUTWARD_BOOST;
+  victim.vz += outZ * BUMP_CHARGE_OUTWARD_BOOST;
 }
 
-export function softClampBodiesInside(bodies: BumpBody[]): void {
-  const limit = BUMP_STAGE_RADIUS - 0.55;
+/** 近邊緣削掉往外速度，讓出局要靠連續推擠 */
+export function applyBumpEdgeSafety(bodies: BumpBody[]): void {
+  const soft = BUMP_STAGE_RADIUS * BUMP_EDGE_SOFT_RATIO;
 
   for (const body of bodies) {
-    if (!body.alive) {
+    if (!body.alive || body.isCharging) {
       continue;
     }
 
     const dist = Math.hypot(body.x, body.z);
 
-    if (dist <= limit || dist < 0.0001) {
+    if (dist < soft || dist < 0.0001) {
       continue;
     }
 
-    const scale = limit / dist;
-    body.x *= scale;
-    body.z *= scale;
-    const radial = (body.vx * body.x + body.vz * body.z) / (limit * limit);
+    const rx = body.x / dist;
+    const rz = body.z / dist;
+    const outward = body.vx * rx + body.vz * rz;
 
-    if (radial > 0) {
-      body.vx -= body.x * radial * 1.6;
-      body.vz -= body.z * radial * 1.6;
+    if (outward <= 0.05) {
+      continue;
     }
+
+    const edgeT = Math.min(1, (dist - soft) / (BUMP_STAGE_RADIUS - soft + 0.001));
+    const cut = outward * edgeT * BUMP_EDGE_OUTWARD_CUT;
+    body.vx -= rx * cut;
+    body.vz -= rz * cut;
   }
 }
 
@@ -622,7 +612,6 @@ export function applyBumpFalls(bodies: BumpBody[], nextFallOrder: number): numbe
       body.vx = 0;
       body.vz = 0;
       body.isCharging = false;
-      body.isDefending = false;
       body.fallOrder = fallOrder;
       fallOrder += 1;
     }
@@ -717,7 +706,7 @@ export function pickHuntVictim(alive: BumpBody[], elapsedMs: number): BumpBody |
     return null;
   }
 
-  const epoch = Math.floor(elapsedMs / 2800);
+  const epoch = Math.floor(elapsedMs / 4500);
   const ranked = [...alive].sort((left, right) => left.id.localeCompare(right.id));
   const index = Math.abs(stableHash(`hunt:${epoch}:${ranked.length}`)) % ranked.length;
 
@@ -766,7 +755,6 @@ export function computeCpuBumpIntent(
     steer: { x: 0, z: 0 },
     wantJump: false,
     wantCharge: false,
-    wantDefend: false,
   };
 
   if (!self.alive) {
@@ -791,7 +779,7 @@ export function computeCpuBumpIntent(
 
     const dist = Math.hypot(rival.x - self.x, rival.z - self.z);
 
-    if (dist > 2.6) {
+    if (dist > 2.05) {
       return false;
     }
 
@@ -815,7 +803,6 @@ export function computeCpuBumpIntent(
       steer,
       wantJump: canJump,
       wantCharge: false,
-      wantDefend: !canJump,
     };
   }
 
@@ -857,7 +844,6 @@ export function computeCpuBumpIntent(
         steer,
         wantJump: false,
         wantCharge: false,
-        wantDefend: selfDist > BUMP_STAGE_RADIUS * 0.9,
       };
     }
 
@@ -872,27 +858,27 @@ export function computeCpuBumpIntent(
     const steer = smoothSteer(brain, aimX - self.x, aimZ - self.z, 0.4);
     const aligned = self.facingX * toFoeX + self.facingZ * toFoeZ;
 
+    const foeNearEdge = foeEdge >= BUMP_STAGE_RADIUS * BUMP_CPU_CHARGE_EDGE_RATIO;
     let wantCharge = false;
 
-    if (elapsedMs < brain.chargeCommitUntilMs) {
-      wantCharge = self.chargeCooldownMs <= 0 && !self.isDefending;
-    } else if (
-      !foe.isDefending
-      && !self.isDefending
-      && self.chargeCooldownMs <= 0
-      && foeDist < 2.7
-      && foeDist > 0.5
-      && aligned > 0.22
-    ) {
-      wantCharge = true;
-      brain.chargeCommitUntilMs = elapsedMs + 280;
+    if (elapsedMs >= BUMP_CPU_CHARGE_OPEN_MS && foeNearEdge) {
+      if (elapsedMs < brain.chargeCommitUntilMs) {
+        wantCharge = self.chargeCooldownMs <= 0;
+      } else if (
+        self.chargeCooldownMs <= 0
+        && foeDist < 1.85
+        && foeDist > 0.5
+        && aligned > 0.38
+      ) {
+        wantCharge = true;
+        brain.chargeCommitUntilMs = elapsedMs + 280;
+      }
     }
 
     return {
       steer,
       wantJump: false,
       wantCharge,
-      wantDefend: false,
     };
   }
 
@@ -919,8 +905,7 @@ export function computeCpuBumpIntent(
     return {
       steer,
       wantJump: threatDist < 1.5 && self.jumpCooldownMs <= 0,
-      wantCharge: self.chargeCooldownMs <= 0 && threatDist < 1.6,
-      wantDefend: true,
+      wantCharge: false,
     };
   }
 
@@ -932,7 +917,6 @@ export function computeCpuBumpIntent(
       steer,
       wantJump: false,
       wantCharge: false,
-      wantDefend: true,
     };
   }
 
@@ -961,26 +945,27 @@ export function computeCpuBumpIntent(
   );
   const aligned = self.facingX * toVx + self.facingZ * toVz;
 
+  const victimEdge = Math.hypot(victim.x, victim.z);
+  const victimNearEdge = victimEdge >= BUMP_STAGE_RADIUS * BUMP_CPU_CHARGE_EDGE_RATIO;
   let wantCharge = false;
 
-  if (elapsedMs < brain.chargeCommitUntilMs) {
-    wantCharge = self.chargeCooldownMs <= 0 && !self.isDefending;
-  } else if (
-    !victim.isDefending
-    && !self.isDefending
-    && self.chargeCooldownMs <= 0
-    && dist < 2.6
-    && dist > 0.55
-    && aligned > 0.25
-  ) {
-    wantCharge = true;
-    brain.chargeCommitUntilMs = elapsedMs + 260;
+  if (elapsedMs >= BUMP_CPU_CHARGE_OPEN_MS && victimNearEdge) {
+    if (elapsedMs < brain.chargeCommitUntilMs) {
+      wantCharge = self.chargeCooldownMs <= 0;
+    } else if (
+      self.chargeCooldownMs <= 0
+      && dist < 1.85
+      && dist > 0.55
+      && aligned > 0.38
+    ) {
+      wantCharge = true;
+      brain.chargeCommitUntilMs = elapsedMs + 260;
+    }
   }
 
   return {
     steer,
     wantJump: false,
     wantCharge,
-    wantDefend: false,
   };
 }

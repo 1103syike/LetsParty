@@ -1,20 +1,35 @@
 import {
-  VB_HITBOX_SPIKE,
+  VB_HITBOX_BUMP,
   vbCanHitBall,
   vbHorizontalDistance,
 } from '@/minigames/volleyball/volleyball-collision';
 import type { PlayerInput } from '@/types/player-input';
 
+function vbCpuCanBump(
+  self: VbCpuPlayer,
+  ball: VbCpuBall,
+): boolean {
+  return vbCanHitBall(self, ball, 'bump', { profile: 'cpu' });
+}
+
+function vbCpuCanSpike(
+  self: VbCpuPlayer,
+  ball: VbCpuBall,
+): boolean {
+  const isJumping = self.y > 0.12;
+  return vbCanHitBall(self, ball, 'spike', { isJumping, profile: 'cpu' });
+}
+
 export type VbTeamId = 'a' | 'b';
-export type VbCpuRole = 'back' | 'front';
+export type VbCpuRole = 'front' | 'back';
 
 export interface VbCpuPlayer {
   id: string;
   teamId: VbTeamId;
+  role: VbCpuRole;
   x: number;
   y: number;
   z: number;
-  role: VbCpuRole;
 }
 
 export interface VbCpuBall {
@@ -45,6 +60,8 @@ export interface VbCpuWorld {
   courtHalfWidth: number;
   courtHalfDepth: number;
   netThickness: number;
+  /** CPU 實心觸球距離（與 tryHit 一致） */
+  cpuSolidContact: number;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -56,11 +73,9 @@ function teamSideSign(teamId: VbTeamId): number {
 }
 
 export function vbCpuRoleForSlot(slot: number): VbCpuRole {
-  // 0：後排接發／防守；1：前排舉球／網前
   return slot === 0 ? 'back' : 'front';
 }
 
-/** 角色守位（半場內，左右錯開但不要貼邊角） */
 export function vbCpuHomeSpot(
   player: VbCpuPlayer,
   world: VbCpuWorld,
@@ -130,22 +145,30 @@ function clampOnHalf(
   side: number,
   world: VbCpuWorld,
 ): { x: number; z: number } {
+  const minOwn = world.netThickness + 0.9;
   return {
     x: clamp(x, -world.courtHalfWidth + 1.4, world.courtHalfWidth - 1.4),
     z: clamp(
       z,
-      side < 0 ? -world.courtHalfDepth + 0.9 : world.netThickness + 0.9,
-      side < 0 ? -world.netThickness - 0.9 : world.courtHalfDepth - 0.9,
+      side < 0 ? -world.courtHalfDepth + 0.9 : minOwn,
+      side < 0 ? -minOwn : world.courtHalfDepth - 0.9,
     ),
   };
 }
 
+/** 只有真的貼到球才准按鍵（跟 tryHit 實心距離對齊） */
+function vbCpuInSolidContact(
+  self: VbCpuPlayer,
+  ball: VbCpuBall,
+  world: VbCpuWorld,
+): boolean {
+  return vbHorizontalDistance(self, ball) <= world.cpuSolidContact;
+}
+
 /**
  * 對手對打 AI（有來有回）：
- * - owner：依落地時間追落點，準時到位
- * - 非 owner：拉開成舉球／殺球站位
- * - 第一觸舉球、第二觸過網；高球偶爾殺
- * - 漏接只吃「難球」鎖定，一般球會回
+ * - 可托可直接擊球
+ * - 但按鍵前必須實心貼球，禁止隔空揮
  */
 function computeRallyOpponentInput(
   self: VbCpuPlayer,
@@ -163,32 +186,31 @@ function computeRallyOpponentInput(
   let targetZ = home.z;
   let steerScale = 0.82;
 
+  const ownBall = world.possessionTeam === self.teamId;
+  const netStand = world.netThickness + 0.9;
+
   if (isOwner) {
     const chaseX = clamp(land.x, -world.courtHalfWidth + 1.3, world.courtHalfWidth - 1.3);
     const chaseZ = clamp(
       land.z,
-      side < 0 ? -world.courtHalfDepth + 0.9 : world.netThickness + 0.9,
-      side < 0 ? -world.netThickness - 0.9 : world.courtHalfDepth - 0.9,
+      side < 0 ? -world.courtHalfDepth + 0.9 : netStand,
+      side < 0 ? -netStand : world.courtHalfDepth - 0.9,
     );
 
     if (landTime > 1.05) {
-      // 還早：先站中間偏落點，別傻站底線
       targetX = chaseX * 0.55 + home.x * 0.45;
       targetZ = chaseZ * 0.5 + home.z * 0.5;
       steerScale = 0.7;
     } else if (landTime > 0.45) {
-      // 進入接球窗：全力到位
       targetX = chaseX;
       targetZ = chaseZ;
       steerScale = 0.9;
     } else {
-      // 最後一步：貼球
       targetX = chaseX * 0.85 + ball.x * 0.15;
       targetZ = chaseZ * 0.85 + ball.z * 0.15;
       steerScale = 0.95;
     }
   } else if (teammate) {
-    // 支援位：跟 owner 左右錯開，準備接舉／補殺
     const coverX = -teammate.x * 0.35 + (self.role === 'front' ? 1.2 : -1.2);
     const coverDepth = self.role === 'front'
       ? world.courtHalfDepth * 0.38
@@ -197,14 +219,13 @@ function computeRallyOpponentInput(
     targetZ = side * coverDepth;
     steerScale = 0.72;
 
-    // 隊友舉球後：前排靠近網準備殺
     if (
       world.possessionTeam === self.teamId
       && world.touchesUsed >= 1
       && self.role === 'front'
     ) {
       targetX = clamp(teammate.x * 0.25 + land.x * 0.35, -world.courtHalfWidth + 1.5, world.courtHalfWidth - 1.5);
-      targetZ = side * (world.courtHalfDepth * 0.32);
+      targetZ = side * Math.max(world.courtHalfDepth * 0.32, world.netThickness + 1.6);
       steerScale = 0.88;
     }
   }
@@ -243,23 +264,23 @@ function computeRallyOpponentInput(
   let jump = false;
 
   const distToBall = vbHorizontalDistance(self, ball);
-  const nearForJump = distToBall < VB_HITBOX_SPIKE + 0.25;
-  // 墊球進 hitbox 就可打；殺球另算
-  const canBump = vbCanHitBall(self, ball, 'bump');
-  const canSpike = vbCanHitBall(self, ball, 'spike', { isJumping: true });
-  const ownBall = world.possessionTeam === self.teamId;
+  const nearForJump = distToBall < VB_HITBOX_BUMP + 0.08;
+  const inContact = vbCpuInSolidContact(self, ball, world);
+  const canBump = inContact && vbCpuCanBump(self, ball);
+  const canSpike = inContact && vbCpuCanSpike(self, ball);
   const touchCount = ownBall ? world.touchesUsed : 0;
-  const shouldSet = Boolean(teammate) && world.phase === 'rally' && touchCount < 1;
+  // 有隊友時第一觸偏好托，但仍可在貼身時直接擊球
+  const preferSet = Boolean(teammate) && world.phase === 'rally' && touchCount < 1;
 
-  // 舉球後／高球：靠近時提前起跳（還不能打）
   if (
     world.phase === 'rally'
     && isOwner
-    && !shouldSet
+    && !preferSet
     && ball.active
     && ball.y > 1.45
     && ball.vy < 0.8
     && nearForJump
+    && inContact
   ) {
     jump = true;
   }
@@ -267,26 +288,24 @@ function computeRallyOpponentInput(
   if ((ball.active || world.phase === 'serve') && (canBump || canSpike)) {
     if (world.phase === 'serve') {
       bump = true;
-    } else if (shouldSet) {
-      // 對打核心：先舉給隊友
+    } else if (preferSet && Math.random() < 0.72) {
       set = true;
-    } else {
-      // 能跳殺再殺；否則穩穩墊過網（站在落點卻不接多半是這裡搞砸）
-      const wantSpike = canSpike
+    } else if (canSpike) {
+      spike = true;
+    } else if (canBump) {
+      const wantJumpSpike = ball.y > 1.35
+        && nearForJump
         && (
           self.role === 'front'
-            ? ball.y > 1.25 && Math.random() < 0.7
-            : ball.y > 1.5 && Math.random() < 0.35
+            ? Math.random() < 0.65
+            : Math.random() < 0.3
         );
 
-      if (wantSpike) {
+      if (wantJumpSpike) {
         jump = true;
-        spike = true;
-      } else if (canBump) {
         bump = true;
       } else {
-        jump = true;
-        spike = true;
+        bump = true;
       }
     }
   }
@@ -296,7 +315,7 @@ function computeRallyOpponentInput(
     && world.servingTeam === self.teamId
     && self.role === 'back'
     && isOwner
-    && vbCanHitBall(self, ball, 'bump')
+    && canBump
   ) {
     bump = true;
     set = false;
@@ -314,7 +333,7 @@ function computeRallyOpponentInput(
   };
 }
 
-/** 本機隊友 CPU：幫你救、寬鬆摸球 */
+/** 本機隊友 CPU：幫你救，但觸球仍貼身（不准隔空） */
 function computeAllyCpuInput(
   self: VbCpuPlayer,
   teammates: VbCpuPlayer[],
@@ -382,26 +401,27 @@ function computeAllyCpuInput(
   let spike = false;
   let jump = false;
 
-  const nearForJump = vbHorizontalDistance(self, ball) < VB_HITBOX_SPIKE + 0.25;
-  // 按鍵門檻跟玩家一樣；物理層隊友才略放（canCpuReachBall）
-  const canTouch = vbCanHitBall(self, ball, 'bump')
-    || vbCanHitBall(self, ball, 'spike', { isJumping: true });
+  const distToBall = vbHorizontalDistance(self, ball);
+  const nearForJump = distToBall < VB_HITBOX_BUMP + 0.08;
+  const inContact = vbCpuInSolidContact(self, ball, world);
+  const canBump = inContact && vbCpuCanBump(self, ball);
+  const canSpike = inContact && vbCpuCanSpike(self, ball);
   const ownBall = world.possessionTeam === self.teamId;
   const touchCount = ownBall ? world.touchesUsed : 0;
-  const shouldSet = Boolean(teammate) && world.phase === 'rally' && touchCount < 1;
+  const preferSet = Boolean(teammate) && world.phase === 'rally' && touchCount < 1;
 
-  if ((ball.active || world.phase === 'serve') && canTouch) {
+  if ((ball.active || world.phase === 'serve') && (canBump || canSpike)) {
     if (world.phase === 'serve') {
       bump = true;
-    } else if (shouldSet) {
+    } else if (preferSet && Math.random() < 0.72) {
       set = true;
-    } else {
-      jump = ball.y > 1.15 && nearForJump;
-      if (jump && (vbCanHitBall(self, ball, 'spike', { isJumping: true }) || self.y > 0.05)) {
-        spike = true;
-      } else {
-        bump = true;
+    } else if (canSpike) {
+      spike = true;
+    } else if (canBump) {
+      if (ball.y > 1.2 && nearForJump) {
+        jump = true;
       }
+      bump = true;
     }
   }
 
@@ -410,7 +430,7 @@ function computeAllyCpuInput(
     && world.servingTeam === self.teamId
     && self.role === 'back'
     && isOwner
-    && vbCanHitBall(self, ball, 'bump')
+    && canBump
   ) {
     bump = true;
     set = false;
@@ -428,11 +448,6 @@ function computeAllyCpuInput(
   };
 }
 
-/**
- * CPU 入口：
- * - 對手隊 → 對打 AI（有來有回）
- * - 本機隊友 → 助攻救球 AI
- */
 export function vbComputeCpuInput(
   self: VbCpuPlayer,
   teammates: VbCpuPlayer[],
@@ -445,12 +460,10 @@ export function vbComputeCpuInput(
     return IDLE_INPUT;
   }
 
-  const hasLocalTeammate = Boolean(
-    world.localPlayerId
-    && teammates.some((player) => player.id === world.localPlayerId),
-  );
+  const local = teammates.find((player) => player.id === world.localPlayerId);
+  const isAlly = Boolean(local && local.teamId === self.teamId);
 
-  if (hasLocalTeammate) {
+  if (isAlly) {
     return computeAllyCpuInput(self, teammates, ball, world);
   }
 

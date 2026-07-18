@@ -23,7 +23,9 @@ export type PartyMachineEvent =
   | { type: 'START_PARTY'; miniGameId: string }
   | { type: 'INTRO_COMPLETE' }
   | { type: 'MINIGAME_COMPLETE'; rankings: string[] }
-  | { type: 'RESULT_ACK'; outcome: PartyRoundOutcomeType; winnerIds?: string[]; miniGameId?: string };
+  | { type: 'RESULT_ACK'; outcome: PartyRoundOutcomeType; winnerIds?: string[]; miniGameId?: string }
+  /** 測試模式：打完一局回選遊戲 */
+  | { type: 'RETURN_TO_LOBBY' };
 
 export const partyMachine = setup({
   types: {
@@ -40,6 +42,19 @@ export const partyMachine = setup({
     winnerIds: [],
     isSuddenDeath: false,
     roundOutcome: null,
+  },
+  on: {
+    RETURN_TO_LOBBY: {
+      target: '.lobby',
+      actions: assign({
+        roundIndex: 0,
+        currentMiniGameId: null,
+        lastRankings: [],
+        winnerIds: [],
+        isSuddenDeath: false,
+        roundOutcome: null,
+      }),
+    },
   },
   states: {
     lobby: {

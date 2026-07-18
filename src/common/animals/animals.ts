@@ -9,6 +9,12 @@ import {
  * Quaternius 低多邊形動物（CC0）
  * 模型來源：https://poly.pizza/u/Quaternius
  * glb 放在 public/models/animals/
+ *
+ * 新增來源：
+ * - wolf https://poly.pizza/m/XU7oNeKShV
+ * - horse https://poly.pizza/m/D3hAeqeDBE
+ * - raccoon https://poly.pizza/m/xMmx6VQP3r
+ * - cat https://poly.pizza/m/qKICY6xla2
  */
 export const ANIMAL_LIST: AnimalDefinition[] = [
   {
@@ -30,6 +36,26 @@ export const ANIMAL_LIST: AnimalDefinition[] = [
     id: 'sheep',
     name: '羊',
     modelPath: '/models/animals/sheep.glb',
+  },
+  {
+    id: 'wolf',
+    name: '狼',
+    modelPath: '/models/animals/wolf.glb',
+  },
+  {
+    id: 'horse',
+    name: '馬',
+    modelPath: '/models/animals/horse.glb',
+  },
+  {
+    id: 'raccoon',
+    name: '浣熊',
+    modelPath: '/models/animals/raccoon.glb',
+  },
+  {
+    id: 'cat',
+    name: '貓',
+    modelPath: '/models/animals/cat.glb',
   },
 ];
 

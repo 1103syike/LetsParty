@@ -36,6 +36,10 @@ const PLACEHOLDER_COLOR: Record<AnimalId, Color3> = {
   chicken: Color3.FromHexString('#f5e6a8'),
   dog: Color3.FromHexString('#c9a57a'),
   sheep: Color3.FromHexString('#f0f0f0'),
+  wolf: Color3.FromHexString('#8a90a0'),
+  horse: Color3.FromHexString('#a67c52'),
+  raccoon: Color3.FromHexString('#9a8b7a'),
+  cat: Color3.FromHexString('#f0c27a'),
 };
 
 function getAnimationToken(name: string): string {

@@ -1,17 +1,22 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 
-withDefaults(
+import { partyAudio } from '@/common/audio/party-audio';
+
+const props = withDefaults(
   defineProps<{
     disabled?: boolean;
     variant?: 'default' | 'hero';
+    /** 不播點擊音（少數特殊按鈕） */
+    quiet?: boolean;
   }>(),
   {
     variant: 'default',
+    quiet: false,
   },
 );
 
-defineEmits<{
+const emit = defineEmits<{
   click: [];
 }>();
 
@@ -26,13 +31,28 @@ function handleMouseUp(): void {
   isActive.value = false;
 }
 
-function handleMouseEnter(): void {
+function handlePointerEnter(): void {
   isHover.value = true;
+
+  if (!props.quiet && !props.disabled) {
+    partyAudio.playSfx('hover');
+  }
 }
 
 function handleMouseLeave(): void {
   isHover.value = false;
   isActive.value = false;
+}
+
+function handleClick(): void {
+  if (!props.quiet) {
+    void partyAudio.unlock().then(() => {
+      partyAudio.playSfx(props.variant === 'hero' ? 'clickConfirm' : 'click');
+      partyAudio.resumeBgmIfNeeded();
+    });
+  }
+
+  emit('click');
 }
 </script>
 
@@ -46,10 +66,10 @@ function handleMouseLeave(): void {
       'party-btn--hover': isHover,
     }"
     :disabled="disabled"
-    @click="$emit('click')"
+    @click="handleClick"
     @mousedown="handleMouseDown"
     @mouseup="handleMouseUp"
-    @mouseenter="handleMouseEnter"
+    @pointerenter="handlePointerEnter"
     @mouseleave="handleMouseLeave"
   >
     <span class="party-btn__deco party-btn__deco--one" />

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
+import { partyAudio } from '@/common/audio/party-audio';
 import AnimalModelPreview from '@/components/animal-model-preview.vue';
 import CuteCrownIcon from '@/components/cute-crown-icon.vue';
 import RpsChoiceIcon from '@/components/rps-choice-icon.vue';
@@ -128,10 +129,12 @@ function resultLabel(participantId: string): string {
 }
 
 function handleChoose(choice: RpsChoice): void {
+  partyAudio.playSfx('clickConfirm');
   emit('choose', choice);
 }
 
 function handleClaim(choice: RpsChoice): void {
+  partyAudio.playSfx('click');
   emit('claim', choice);
 }
 
@@ -177,7 +180,7 @@ function playerSlotLabel(slot: number): string {
 }
 
 const isTimerUrgent = computed(
-  () => props.snapshot.phase === 'roaming' && props.snapshot.roamingSecondsLeft <= 3,
+  () => props.snapshot.phase === 'roaming' && props.snapshot.roamingSecondsLeft <= 5,
 );
 
 function choiceWaitingText(choice: RpsChoice): string {
@@ -217,7 +220,7 @@ function hudCardClass(color: Participant['color']): string {
       <!-- 分鏡／頒獎時讓畫面乾淨，不蓋住右上格 -->
       <aside
         v-if="!showComicPanels && !showCrownCeremony"
-        class="rps-hud"
+        class="rps-hud game-chrome"
         :aria-label="rpsCopy.scoreboardTitle"
       >
         <div class="rps-hud__round font-game">{{ roundLabel }}</div>
@@ -252,7 +255,7 @@ function hudCardClass(color: Participant['color']): string {
                 {{ row.participant.displayName }}
                 <span
                   v-if="row.participant.id === localParticipantId"
-                  class="rps-hud__you"
+                  class="rps-hud__you font-game"
                 >{{ rpsCopy.localPlayerTag }}</span>
               </span>
             </div>
@@ -272,14 +275,14 @@ function hudCardClass(color: Participant['color']): string {
           class="rps-hud__timer"
           :class="{ 'rps-hud__timer--urgent': isTimerUrgent }"
         >
-          <span class="rps-hud__timer-label">{{ rpsCopy.chooseHint }}</span>
+          <span class="rps-hud__timer-label font-game">{{ rpsCopy.chooseHint }}</span>
           <span class="rps-hud__timer-value font-game">{{ snapshot.roamingSecondsLeft }}</span>
         </div>
       </aside>
 
       <div
         v-if="showCrownCeremony"
-        class="crown-ceremony"
+        class="crown-ceremony game-chrome"
         aria-live="polite"
       >
         <div class="crown-ceremony__burst" aria-hidden="true" />
@@ -289,7 +292,7 @@ function hudCardClass(color: Participant['color']): string {
 
       <p
         v-if="phaseStatusText && !showComicPanels && !showCrownCeremony"
-        class="rps-stage__status"
+        class="rps-stage__status game-chrome"
       >
         {{ phaseStatusText }}
       </p>
@@ -319,14 +322,14 @@ function hudCardClass(color: Participant['color']): string {
 
           <div class="comic-panel__frame" />
 
-          <div class="comic-panel__nameplate">
+          <div class="comic-panel__nameplate game-chrome">
             <span class="comic-panel__index font-game">{{ index + 1 }}</span>
             <span class="comic-panel__name">{{ participant.displayName }}</span>
           </div>
 
           <div
             v-if="isWinner(participant.id)"
-            class="comic-panel__win-sparkles"
+            class="comic-panel__win-sparkles game-chrome"
             aria-hidden="true"
           >
             <span>★</span>
@@ -335,7 +338,7 @@ function hudCardClass(color: Participant['color']): string {
           </div>
 
           <div
-            class="comic-panel__callout"
+            class="comic-panel__callout game-chrome"
             :class="choiceClass(participant.id)"
           >
             <p class="comic-panel__callout-kicker">
@@ -355,7 +358,7 @@ function hudCardClass(color: Participant['color']): string {
 
           <div
             v-if="isWinner(participant.id)"
-            class="comic-panel__confetti"
+            class="comic-panel__confetti game-chrome"
             aria-hidden="true"
           >
             <span
@@ -373,7 +376,7 @@ function hudCardClass(color: Participant['color']): string {
 
           <div
             v-if="snapshot.showResults"
-            class="comic-panel__stamp font-game"
+            class="comic-panel__stamp font-game game-chrome"
             :class="{
               'comic-panel__stamp--win': snapshot.results[participant.id] === 'win',
               'comic-panel__stamp--lose': snapshot.results[participant.id] === 'lose',
@@ -390,7 +393,7 @@ function hudCardClass(color: Participant['color']): string {
 
       <div
         v-if="!showComicPanels"
-        class="rps-stage__controls"
+        class="rps-stage__controls game-chrome"
         :class="{ 'rps-stage__controls--choosing': showActionBar && !localChoice }"
       >
         <div
@@ -500,14 +503,18 @@ function hudCardClass(color: Participant['color']): string {
   inset: 0;
   z-index: 200;
   overflow: hidden;
-  background: #b8dce8;
+  background: #7ec8f0;
 
   &--split {
     background: #1a1524;
   }
 
   &--crown-ceremony {
-    background: linear-gradient(180deg, rgba(88, 76, 118, 0.92), rgba(46, 38, 64, 0.96));
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-text-heading) 88%, black) 0%,
+      color-mix(in srgb, var(--color-text-heading) 96%, black) 100%
+    );
   }
 }
 
@@ -528,13 +535,13 @@ function hudCardClass(color: Participant['color']): string {
 .crown-ceremony__burst {
   position: absolute;
   top: calc(var(--space-lg) + env(safe-area-inset-top));
-  width: min(18rem, 72vw);
-  height: min(18rem, 72vw);
+  width: min(20rem, 78vw);
+  height: min(20rem, 78vw);
   border-radius: 50%;
   background: radial-gradient(
     circle,
-    color-mix(in srgb, var(--color-warning) 42%, transparent) 0%,
-    color-mix(in srgb, var(--color-warning) 12%, transparent) 42%,
+    color-mix(in srgb, var(--color-warning) 55%, transparent) 0%,
+    color-mix(in srgb, var(--color-warning) 18%, transparent) 42%,
     transparent 72%
   );
   animation: crown-ceremony-burst 1.1s ease-in-out infinite;
@@ -543,9 +550,14 @@ function hudCardClass(color: Participant['color']): string {
 .crown-ceremony__kicker {
   position: relative;
   margin: 0;
+  padding: var(--space-xs) var(--space-md);
+  border: 3px solid var(--color-on-accent);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-surface-solid) 92%, white);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-text-heading) 35%, transparent);
   font-size: var(--font-size-lg);
-  letter-spacing: 0.12em;
-  color: #f5f0e8;
+  letter-spacing: 0.14em;
+  color: var(--color-text-heading);
   animation: crown-ceremony-pop 0.55s cubic-bezier(0.22, 1.08, 0.36, 1) backwards;
 }
 
@@ -553,11 +565,15 @@ function hudCardClass(color: Participant['color']): string {
   position: relative;
   margin: 0;
   padding: 0 var(--space-md);
-  font-size: var(--font-size-2xl);
+  font-size: clamp(var(--font-size-2xl), 7vw, var(--font-size-3xl));
   line-height: var(--line-height-tight);
   text-align: center;
   color: var(--color-warning);
-  text-shadow: 0 var(--space-xs) 0 rgba(26, 21, 36, 0.35);
+  text-shadow:
+    3px 3px 0 color-mix(in srgb, var(--color-text-heading) 55%, black),
+    -2px -2px 0 color-mix(in srgb, var(--color-text-heading) 40%, black),
+    2px -2px 0 color-mix(in srgb, var(--color-text-heading) 40%, black),
+    -2px 2px 0 color-mix(in srgb, var(--color-text-heading) 40%, black);
   animation: crown-ceremony-pop 0.62s cubic-bezier(0.22, 1.08, 0.36, 1) 0.08s backwards;
 }
 
@@ -574,7 +590,7 @@ function hudCardClass(color: Participant['color']): string {
 @keyframes crown-ceremony-pop {
   from {
     opacity: 0;
-    transform: translateY(var(--space-md)) scale(0.88);
+    transform: translateY(var(--space-md)) scale(0.82);
   }
 
   to {
@@ -592,7 +608,7 @@ function hudCardClass(color: Participant['color']): string {
 
   50% {
     opacity: 1;
-    transform: scale(1.04);
+    transform: scale(1.06);
   }
 }
 
@@ -603,18 +619,21 @@ function hudCardClass(color: Participant['color']): string {
   z-index: 2;
   transform: translateX(-50%);
   margin: 0;
-  padding: var(--space-xs) var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  border: 3px solid var(--color-on-accent);
   border-radius: var(--radius-full);
-  background: rgba(255, 255, 255, 0.88);
+  background: color-mix(in srgb, var(--color-surface-solid) 96%, white);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-text-heading) 22%, transparent);
   font-family: var(--font-family-game);
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
   color: var(--color-text-heading);
+  letter-spacing: 0.04em;
   pointer-events: none;
   white-space: nowrap;
 }
 
-/* 瑪利歐派對風：大頭像 + 右對齊皇冠 */
+/* 瑪利歐派對風 HUD（對齊一拳擂台） */
 .rps-hud {
   position: absolute;
   top: calc(var(--space-md) + env(safe-area-inset-top));
@@ -623,27 +642,27 @@ function hudCardClass(color: Participant['color']): string {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: var(--space-xs);
-  width: min(13.5rem, 48vw);
+  gap: var(--space-sm);
+  width: min(14.5rem, 52vw);
   pointer-events: none;
 }
 
 .rps-hud__round {
   align-self: flex-end;
   padding: var(--space-xs) var(--space-sm);
-  border: 2px solid color-mix(in srgb, var(--color-border) 70%, white);
+  border: 3px solid color-mix(in srgb, var(--color-border) 55%, white);
   border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--color-surface) 94%, white);
+  background: color-mix(in srgb, var(--color-surface-solid) 96%, white);
   font-size: var(--font-size-xs);
-  letter-spacing: 0.04em;
-  color: var(--color-text);
-  box-shadow: 2px 2px 0 color-mix(in srgb, var(--color-border) 40%, transparent);
+  letter-spacing: 0.06em;
+  color: var(--color-text-heading);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-text-heading) 22%, transparent);
 }
 
 .rps-hud__list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -655,15 +674,15 @@ function hudCardClass(color: Participant['color']): string {
   align-items: center;
   gap: var(--space-sm);
   padding: var(--space-xs) var(--space-sm) var(--space-xs) var(--space-xs);
-  border: 3px solid var(--hud-tone);
+  border: 4px solid var(--hud-tone);
   border-radius: var(--radius-md);
   background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--hud-tone) 34%, white) 0%,
-    color-mix(in srgb, var(--color-surface) 70%, white) 55%,
+    145deg,
+    color-mix(in srgb, var(--hud-tone) 42%, white) 0%,
+    color-mix(in srgb, var(--color-surface-solid) 80%, white) 52%,
     white 100%
   );
-  box-shadow: 3px 3px 0 color-mix(in srgb, var(--hud-tone) 42%, transparent);
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--hud-tone) 48%, transparent);
 
   &--player-1 {
     --hud-tone: var(--color-player-1);
@@ -682,21 +701,34 @@ function hudCardClass(color: Participant['color']): string {
   }
 
   &--leader {
-    box-shadow:
-      3px 3px 0 color-mix(in srgb, var(--hud-tone) 42%, transparent),
-      0 0 0 2px color-mix(in srgb, var(--color-warning) 60%, white);
+    animation: rps-hud-leader-pulse 1.2s ease-in-out infinite;
   }
 
   &--local {
-    outline: 2px solid color-mix(in srgb, var(--color-accent) 60%, white);
-    outline-offset: 1px;
+    outline: 3px solid color-mix(in srgb, var(--color-accent) 70%, white);
+    outline-offset: 2px;
+  }
+}
+
+@keyframes rps-hud-leader-pulse {
+  0%,
+  100% {
+    box-shadow:
+      4px 4px 0 color-mix(in srgb, var(--hud-tone) 48%, transparent),
+      0 0 0 2px color-mix(in srgb, var(--color-warning) 55%, white);
+  }
+
+  50% {
+    box-shadow:
+      4px 4px 0 color-mix(in srgb, var(--hud-tone) 48%, transparent),
+      0 0 0 4px color-mix(in srgb, var(--color-warning) 80%, white);
   }
 }
 
 .rps-hud__portrait-wrap {
   position: relative;
-  width: 3.5rem;
-  height: 3.5rem;
+  width: 3.75rem;
+  height: 3.75rem;
   flex-shrink: 0;
 }
 
@@ -711,7 +743,6 @@ function hudCardClass(color: Participant['color']): string {
     inset 0 0 0 2px color-mix(in srgb, white 70%, transparent),
     2px 2px 0 color-mix(in srgb, var(--hud-tone) 28%, transparent);
 
-  /* 與排行榜同一套 compact 預覽，裁進圓框 */
   :deep(.animal-preview__canvas) {
     width: 100%;
     height: 100%;
@@ -727,7 +758,7 @@ function hudCardClass(color: Participant['color']): string {
   z-index: 1;
   display: grid;
   place-items: center;
-  min-width: 1.35rem;
+  min-width: 1.4rem;
   padding: 0 var(--space-xs);
   border: 2px solid var(--color-on-accent);
   border-radius: var(--radius-sm);
@@ -735,8 +766,8 @@ function hudCardClass(color: Participant['color']): string {
   font-size: var(--font-size-xs);
   line-height: 1.15;
   color: var(--color-on-accent);
-  box-shadow: 1px 1px 0 color-mix(in srgb, var(--hud-tone) 45%, transparent);
-  transform: translate(-20%, 20%);
+  box-shadow: 2px 2px 0 color-mix(in srgb, var(--hud-tone) 45%, transparent);
+  transform: translate(-18%, 18%);
 }
 
 .rps-hud__body {
@@ -754,13 +785,16 @@ function hudCardClass(color: Participant['color']): string {
 }
 
 .rps-hud__you {
-  margin-left: 2px;
+  margin-left: var(--space-xs);
   padding: 0 var(--space-xs);
+  border: 2px solid color-mix(in srgb, var(--color-accent) 55%, white);
   border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 28%, white);
   font-size: var(--font-size-xs);
-  color: var(--color-accent);
+  letter-spacing: 0.04em;
+  color: var(--color-on-accent);
   vertical-align: middle;
+  text-shadow: 1px 1px 0 color-mix(in srgb, var(--color-accent-hover) 55%, transparent);
 }
 
 .rps-hud__crowns {
@@ -775,51 +809,75 @@ function hudCardClass(color: Participant['color']): string {
   font-size: var(--font-size-2xl);
   line-height: 1;
   color: var(--color-text-heading);
-  text-shadow: 1px 1px 0 color-mix(in srgb, var(--color-warning) 40%, white);
+  text-shadow: 2px 2px 0 color-mix(in srgb, var(--color-warning) 45%, white);
 }
 
 .rps-hud__timer {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-sm);
-  min-height: 2.5rem;
-  padding: 0 var(--space-sm);
-  border: 3px solid color-mix(in srgb, var(--color-accent) 40%, white);
-  border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--color-accent) 12%, white);
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border: 4px solid color-mix(in srgb, var(--color-accent) 55%, white);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-accent) 28%, white) 0%,
+    color-mix(in srgb, var(--color-surface-solid) 92%, white) 100%
+  );
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--color-accent) 40%, transparent);
 
   &--urgent {
-    border-color: color-mix(in srgb, var(--color-accent) 70%, white);
-    background: color-mix(in srgb, var(--color-accent) 22%, white);
+    border-color: color-mix(in srgb, var(--color-warning) 70%, white);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-warning) 48%, white) 0%,
+      color-mix(in srgb, var(--color-surface-solid) 90%, white) 100%
+    );
+    box-shadow: 4px 4px 0 color-mix(in srgb, var(--color-warning) 45%, transparent);
+    animation: rps-timer-shake 0.55s ease-in-out infinite;
   }
 }
 
 .rps-hud__timer-label {
-  display: flex;
-  align-items: center;
   font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-bold);
-  letter-spacing: 0.06em;
-  line-height: 1;
-  color: var(--color-text-muted);
+  letter-spacing: 0.08em;
+  color: var(--color-text-heading);
 }
 
 .rps-hud__timer-value {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 2rem;
-  min-height: 2rem;
-  font-size: var(--font-size-xl);
+  font-size: var(--font-size-3xl);
   line-height: 1;
-  color: var(--color-accent);
-  text-align: center;
-  /* 遊戲字型基線偏上，往下拉回垂直中心 */
-  padding-top: 0.14em;
+  color: var(--color-text-heading);
+  text-shadow: 2px 2px 0 color-mix(in srgb, var(--color-accent) 35%, white);
+  padding-top: 0.08em;
 
   .rps-hud__timer--urgent & {
-    font-weight: var(--font-weight-bold);
+    color: color-mix(in srgb, var(--color-warning) 35%, var(--color-text-heading));
+    text-shadow: 2px 2px 0 color-mix(in srgb, var(--color-warning) 50%, white);
+    animation: rps-timer-pulse 0.55s ease-in-out infinite;
+  }
+}
+
+@keyframes rps-timer-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.12);
+  }
+}
+
+@keyframes rps-timer-shake {
+  0%,
+  100% {
+    transform: rotate(-0.6deg);
+  }
+
+  50% {
+    transform: rotate(0.6deg);
   }
 }
 

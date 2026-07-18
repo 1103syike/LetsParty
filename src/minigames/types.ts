@@ -17,10 +17,19 @@ export interface MiniGameInstance {
   getScores?(): Record<string, number>;
 }
 
+export interface MiniGameCreateOptions {
+  /** 測試模式：跳過開場倒數，直接開戰 */
+  skipOpeningCountdown?: boolean;
+}
+
 export interface MiniGameDefinition {
   id: string;
   name: string;
   rules: string;
   inputMode: MiniGameInputMode;
-  create(participants: Participant[], localPlayerId?: string | null): MiniGameInstance;
+  create(
+    participants: Participant[],
+    localPlayerId?: string | null,
+    options?: MiniGameCreateOptions,
+  ): MiniGameInstance;
 }

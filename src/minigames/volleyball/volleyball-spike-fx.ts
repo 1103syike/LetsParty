@@ -30,7 +30,7 @@ export class VolleyballSpikeFx {
   }
 
   playBurst(x: number, z: number): void {
-    this.spawnBurst(x, z, 72);
+    this.spawnBurst(x, z, 110);
     this.spawnRing(x, z);
     this.showFlash(x, z);
   }
@@ -84,10 +84,10 @@ export class VolleyballSpikeFx {
     }
 
     this.flashMesh.position.set(x, 0.04, z);
-    this.flashMesh.scaling.setAll(1.2);
-    this.flashMat.alpha = 0.55;
+    this.flashMesh.scaling.setAll(1.55);
+    this.flashMat.alpha = 0.7;
     this.flashMesh.setEnabled(true);
-    this.flashUntilMs = performance.now() + 280;
+    this.flashUntilMs = performance.now() + 360;
   }
 
   private spawnBurst(x: number, z: number, count: number): void {
@@ -98,23 +98,23 @@ export class VolleyballSpikeFx {
 
     system.particleTexture = texture;
     system.emitter = new Vector3(x, 0.2, z);
-    system.minEmitBox = new Vector3(-0.12, 0, -0.12);
-    system.maxEmitBox = new Vector3(0.12, 0.25, 0.12);
+    system.minEmitBox = new Vector3(-0.18, 0, -0.18);
+    system.maxEmitBox = new Vector3(0.18, 0.32, 0.18);
     system.color1 = hot;
     system.color2 = ember;
     system.colorDead = new Color4(ember.r, ember.g, ember.b, 0);
-    system.minSize = 0.12;
-    system.maxSize = 0.48;
-    system.minLifeTime = 0.18;
-    system.maxLifeTime = 0.55;
+    system.minSize = 0.14;
+    system.maxSize = 0.62;
+    system.minLifeTime = 0.2;
+    system.maxLifeTime = 0.65;
     system.emitRate = 0;
     system.manualEmitCount = count;
     system.blendMode = ParticleSystem.BLENDMODE_ADD;
-    system.gravity = new Vector3(0, -8, 0);
-    system.direction1 = new Vector3(-4.5, 1.2, -4.5);
-    system.direction2 = new Vector3(4.5, 6.5, 4.5);
-    system.minEmitPower = 3.2;
-    system.maxEmitPower = 8.5;
+    system.gravity = new Vector3(0, -9, 0);
+    system.direction1 = new Vector3(-5.5, 1.4, -5.5);
+    system.direction2 = new Vector3(5.5, 7.5, 5.5);
+    system.minEmitPower = 4.0;
+    system.maxEmitPower = 10.5;
     system.updateSpeed = 0.016;
     system.disposeOnStop = true;
     system.targetStopDuration = 0.55;

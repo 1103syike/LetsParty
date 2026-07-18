@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, nextTick, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import LobbySetup from '@/components/lobby-setup.vue';
 import PartyView from '@/components/party-view.vue';
+import TestGamePicker from '@/components/test-game-picker.vue';
+import { usePartyBgm } from '@/composables/use-party-bgm';
 import { usePartySession } from '@/composables/use-party-session';
 import { usePartyStore } from '@/stores/party-store';
 
@@ -15,6 +17,11 @@ const partySession = usePartySession();
 const roomId = computed((): string => String(route.params.id));
 
 const isInLobby = computed(() => partySession.phase.value === 'lobby');
+
+usePartyBgm({
+  phase: computed(() => partySession.phase.value),
+  gameId: computed(() => partySession.currentGameId.value),
+});
 
 const gameName = computed(() => partySession.currentDefinition.value?.name ?? '');
 
@@ -32,6 +39,18 @@ function goHome(): void {
   router.replace({ name: 'home' });
 }
 
+function skipIntroIfTestMode(): void {
+  if (!partyStore.isTestMode) {
+    return;
+  }
+
+  const phase = partySession.phase.value;
+
+  if (phase === 'miniGameIntro' || phase === 'suddenDeathIntro') {
+    partySession.completeIntro();
+  }
+}
+
 // 重整後 Pinia 已空、URL 卻還在 /room/:id → 直接送回首頁，避免幽靈大廳
 onMounted(() => {
   if (!hasActivePartySession.value) {
@@ -39,12 +58,39 @@ onMounted(() => {
   }
 });
 
+watch(
+  () => partySession.phase.value,
+  (phase) => {
+    if (
+      partyStore.isTestMode
+      && (phase === 'miniGameIntro' || phase === 'suddenDeathIntro')
+    ) {
+      void nextTick(() => {
+        skipIntroIfTestMode();
+      });
+    }
+  },
+);
+
 function handleStartParty(): void {
   partySession.startParty();
 }
 
+function handlePickTestGame(gameId: string): void {
+  partySession.startTestGame(gameId);
+}
+
 function handleBackHome(): void {
   goHome();
+}
+
+function handleContinueParty(): void {
+  if (partyStore.isTestMode) {
+    partySession.returnToTestLobby();
+    return;
+  }
+
+  partySession.acknowledgeRoundResult();
 }
 </script>
 
@@ -52,6 +98,7 @@ function handleBackHome(): void {
   <main
     v-if="hasActivePartySession"
     class="room-page"
+    :class="{ 'room-page--wide': partyStore.isTestMode && isInLobby }"
   >
     <PartyView
       v-if="!isInLobby"
@@ -59,7 +106,6 @@ function handleBackHome(): void {
       :round-index="partySession.roundIndex.value"
       :winner-ids="partySession.winnerIds.value"
       :is-sudden-death="partySession.isSuddenDeath.value"
-      :intro-seconds-left="partySession.introSecondsLeft.value"
       :game-id="partySession.currentGameId.value"
       :game-name="gameName"
       :game-rules="gameRules"
@@ -75,7 +121,14 @@ function handleBackHome(): void {
       @joystick="partySession.sendJoystickInput($event.x, $event.y)"
       @arena="partySession.sendArenaInput($event)"
       @volleyball="partySession.sendVolleyballInput($event)"
-      @continue-party="partySession.acknowledgeRoundResult()"
+      @continue-party="handleContinueParty"
+      @start-intro-game="partySession.completeIntro()"
+      @back-home="handleBackHome"
+    />
+
+    <TestGamePicker
+      v-else-if="partyStore.isTestMode"
+      @pick="handlePickTestGame"
       @back-home="handleBackHome"
     />
 
@@ -97,5 +150,9 @@ function handleBackHome(): void {
   min-height: 100vh;
   margin: 0 auto;
   padding: var(--space-lg) var(--space-md) calc(var(--space-xl) + env(safe-area-inset-bottom));
+}
+
+.room-page--wide {
+  max-width: 32rem;
 }
 </style>

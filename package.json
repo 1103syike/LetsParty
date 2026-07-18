@@ -4,10 +4,13 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "port": 3000,
     "dev": "vite --host --open",
     "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "capture-covers": "node scripts/capture-minigame-covers.mjs",
+    "fetch-audio": "node scripts/fetch-audio-sources.mjs",
+    "probe:vb-cpu-hit": "npx --yes tsx scripts/probe-volleyball-cpu-hit.mts",
+    "probe:vb-out-trace": "npx --yes tsx scripts/probe-volleyball-out-trace.mts"
   },
   "dependencies": {
     "@babylonjs/core": "^6.49.0",
@@ -20,7 +23,9 @@
     "xstate": "^5.32.5"
   },
   "devDependencies": {
+    "@types/node": "^26.1.1",
     "@vitejs/plugin-vue": "^4.6.2",
+    "playwright": "^1.61.1",
     "sass": "~1.77.8",
     "typescript": "^5.4.2",
     "vite": "^4.5.2",

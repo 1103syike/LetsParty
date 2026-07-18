@@ -1,6 +1,12 @@
 import type { MiniGameDefinition } from '@/minigames/types';
 import { volleyballCopy } from '@/minigames/volleyball/locales/zh-TW';
-import { VolleyballGame, type VolleyballSnapshot } from '@/minigames/volleyball/volleyball';
+import {
+  VolleyballGame,
+  type VolleyballEventKind,
+  type VolleyballMatchEvent,
+  type VolleyballPlayerRecord,
+  type VolleyballSnapshot,
+} from '@/minigames/volleyball/volleyball';
 import { VOLLEYBALL_ID } from '@/minigames/volleyball/volleyball-id';
 import type { Participant } from '@/types/party';
 
@@ -16,4 +22,9 @@ export const volleyballDefinition: MiniGameDefinition = {
   },
 };
 
-export type { VolleyballSnapshot };
+export type {
+  VolleyballEventKind,
+  VolleyballMatchEvent,
+  VolleyballPlayerRecord,
+  VolleyballSnapshot,
+};

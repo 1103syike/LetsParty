@@ -8,6 +8,7 @@ import { ROCK_PAPER_SCISSORS_ID } from '@/minigames/rock-paper-scissors';
 import type { RockPaperScissorsSnapshot } from '@/minigames/rock-paper-scissors';
 import type { MiniGameDefinition, MiniGameInstance } from '@/minigames/types';
 import type { VolleyballSnapshot } from '@/minigames/volleyball';
+import { VolleyballGame } from '@/minigames/volleyball/volleyball';
 import { VOLLEYBALL_ID } from '@/minigames/volleyball/volleyball-id';
 import {
   partyMachine,
@@ -17,8 +18,9 @@ import { evaluatePartyRound } from '@/party/scoring/crown';
 import { usePartyStore } from '@/stores/party-store';
 import type { RpsChoice } from '@/types/player-input';
 
-const INTRO_COUNTDOWN_SECONDS = 3;
 const ROUND_RESULT_AUTO_MS = 3600;
+/** 測試模式結算後稍停再回選單 */
+const TEST_RETURN_LOBBY_MS = 2200;
 
 function resolveMiniGameDefinition(
   miniGameId: string | null,
@@ -42,10 +44,8 @@ export function usePartySession() {
   /** shallow：避免 class instance 被 deep reactive 弄丟方法 */
   const miniGameInstance = shallowRef<MiniGameInstance | null>(null);
   const currentDefinition = ref<MiniGameDefinition | null>(null);
-  const introSecondsLeft = ref(INTRO_COUNTDOWN_SECONDS);
   const tickFrameId = ref<number | null>(null);
   const lastTickAt = ref<number | null>(null);
-  const introIntervalId = ref<number | null>(null);
   const roundResultAutoTimeoutId = ref<number | null>(null);
   const lastCrownAwards = ref<Record<string, number>>({});
   const lastRoundResults = ref<Record<string, string>>({});
@@ -103,13 +103,6 @@ export function usePartySession() {
     return instance.getGameSnapshot() as VolleyballSnapshot;
   });
 
-  function stopIntroCountdown(): void {
-    if (introIntervalId.value !== null) {
-      window.clearInterval(introIntervalId.value);
-      introIntervalId.value = null;
-    }
-  }
-
   function clearRoundResultAutoAdvance(): void {
     if (roundResultAutoTimeoutId.value !== null) {
       window.clearTimeout(roundResultAutoTimeoutId.value);
@@ -125,6 +118,15 @@ export function usePartySession() {
       && currentGameId.value !== ARENA_BUMP_ID
       && currentGameId.value !== VOLLEYBALL_ID
     ) {
+      return;
+    }
+
+    // 測試模式：看完結算就回選遊戲，不連戰
+    if (partyStore.isTestMode) {
+      roundResultAutoTimeoutId.value = window.setTimeout(() => {
+        roundResultAutoTimeoutId.value = null;
+        returnToTestLobby();
+      }, TEST_RETURN_LOBBY_MS);
       return;
     }
 
@@ -206,23 +208,21 @@ export function usePartySession() {
     miniGameInstance.value = definition.create(
       partyStore.participants,
       partyStore.localParticipantId,
+      {
+        skipOpeningCountdown: partyStore.isTestMode,
+      },
     );
     miniGameInstance.value.start();
     startTickLoop();
   }
 
-  function startIntroCountdown(): void {
-    stopIntroCountdown();
-    introSecondsLeft.value = INTRO_COUNTDOWN_SECONDS;
+  /** 關卡 loading 按「開始遊戲」後進入對戰 */
+  function completeIntro(): void {
+    if (phase.value !== 'miniGameIntro' && phase.value !== 'suddenDeathIntro') {
+      return;
+    }
 
-    introIntervalId.value = window.setInterval(() => {
-      introSecondsLeft.value -= 1;
-
-      if (introSecondsLeft.value <= 0) {
-        stopIntroCountdown();
-        send({ type: 'INTRO_COMPLETE' });
-      }
-    }, 1000);
+    send({ type: 'INTRO_COMPLETE' });
   }
 
   function startParty(): void {
@@ -235,6 +235,38 @@ export function usePartySession() {
     const definition = pickRandomMiniGame(partyStore.settings.enabledMiniGameIds);
 
     send({ type: 'START_PARTY', miniGameId: definition.id });
+  }
+
+  /** 測試模式：指定遊戲開打一局 */
+  function startTestGame(miniGameId: string): void {
+    if (!partyStore.isHost || !partyStore.isTestMode || partyStore.participants.length === 0) {
+      return;
+    }
+
+    const definition = getMiniGameById(miniGameId);
+
+    if (!definition) {
+      return;
+    }
+
+    partyStore.fillCpuParticipants();
+    partyStore.resetMatchProgress();
+    send({ type: 'START_PARTY', miniGameId: definition.id });
+  }
+
+  /** 測試模式：一局結束回選遊戲 */
+  function returnToTestLobby(): void {
+    if (!partyStore.isTestMode) {
+      return;
+    }
+
+    clearRoundResultAutoAdvance();
+    disposeMiniGame();
+    currentDefinition.value = null;
+    lastCrownAwards.value = {};
+    lastRoundResults.value = {};
+    partyStore.resetMatchProgress();
+    send({ type: 'RETURN_TO_LOBBY' });
   }
 
   function sendJoystickInput(x: number, y: number): void {
@@ -253,6 +285,8 @@ export function usePartySession() {
     jump: boolean;
     charge: boolean;
     defend: boolean;
+    aimX?: number | null;
+    aimZ?: number | null;
   }): void {
     const localId = partyStore.localParticipantId;
 
@@ -267,6 +301,8 @@ export function usePartySession() {
       jump: input.jump,
       charge: input.charge,
       defend: input.defend,
+      aimX: input.aimX,
+      aimZ: input.aimZ,
     });
   }
 
@@ -379,7 +415,6 @@ export function usePartySession() {
         snapshot.value.context.currentMiniGameId,
         partyStore.settings.enabledMiniGameIds,
       );
-      startIntroCountdown();
       return;
     }
 
@@ -393,16 +428,32 @@ export function usePartySession() {
     }
 
     if (nextPhase === 'roundResult' || nextPhase === 'partyEnd' || nextPhase === 'lobby') {
-      stopIntroCountdown();
       disposeMiniGame();
     }
   });
 
   onScopeDispose(() => {
-    stopIntroCountdown();
     clearRoundResultAutoAdvance();
     disposeMiniGame();
+    if (import.meta.env.DEV) {
+      delete (window as Window & { __vbDebug?: unknown }).__vbDebug;
+    }
   });
+
+  // 開發用：強制出界，方便驗中央提示／音效
+  if (import.meta.env.DEV) {
+    (window as Window & {
+      __vbDebug?: { forceOut: () => void };
+    }).__vbDebug = {
+      forceOut: () => {
+        const game = miniGameInstance.value;
+
+        if (game instanceof VolleyballGame) {
+          game.debugForceOut();
+        }
+      },
+    };
+  }
 
   return {
     phase,
@@ -413,13 +464,15 @@ export function usePartySession() {
     currentDefinition,
     currentGameId,
     liveScores,
-    introSecondsLeft,
     lastCrownAwards,
     lastRoundResults,
     rpsSnapshot,
     arenaBumpSnapshot,
     volleyballSnapshot,
     startParty,
+    startTestGame,
+    returnToTestLobby,
+    completeIntro,
     sendLocalMash,
     sendRpsChoice,
     sendRpsClaim,

@@ -10,14 +10,12 @@ import {
 
 import type { AnimalActor } from '@/common/animals/animal-actor';
 
-/** 流星弧線飛出時間 */
-const FALL_DURATION_MS = 980;
-/** 水平飛出距離（台緣再往外） */
-const OUTWARD_DISTANCE = 5.4;
+/** 甩飛到台外落地時間（結算延遲會加上這段） */
+export const ARENA_BUMP_FALL_DURATION_MS = 720;
+/** 水平飛出距離（台緣再往外，落到草／水邊） */
+const OUTWARD_DISTANCE = 2.8;
 /** 拋物線最高點 */
-const ARC_PEAK_Y = 2.35;
-/** 落地／消失高度 */
-const ARC_END_Y = -5.2;
+const ARC_PEAK_Y = 1.85;
 const PLAYER_COLOR_HEX: Record<string, string> = {
   'player-1': '#e86b8a',
   'player-2': '#9b7fd4',
@@ -35,6 +33,7 @@ interface FallDrop {
   elapsedMs: number;
   spinSign: number;
   trail: ParticleSystem;
+  landed: boolean;
 }
 
 function hexToColor4(hex: string, alpha = 1): Color4 {
@@ -49,15 +48,13 @@ function hexToColor4(hex: string, alpha = 1): Color4 {
   );
 }
 
-/** y = 起點 → 拋物線頂 → 台下；t∈[0,1] */
-function meteorHeight(startY: number, t: number): number {
-  // 前段拱高、後段加速下墜（流星感）
-  const lift = (ARC_PEAK_Y - startY) * 4 * t * (1 - t);
-  const plunge = ARC_END_Y * t * t * t;
-  return startY + lift + plunge;
+/** y：起點 → 拋物線 → 落地 y=0 */
+function flightHeight(startY: number, t: number): number {
+  const peakLift = (ARC_PEAK_Y - startY) * 4 * t * (1 - t);
+  return startY * (1 - t) + peakLift;
 }
 
-/** 掉落演出：拋物線甩飛 + 翻滾 + 流星拖尾 */
+/** 掉落演出：拋物線甩飛 → 台外趴地 */
 export class ArenaBumpFallFx {
   private readonly scene: Scene;
 
@@ -77,10 +74,11 @@ export class ArenaBumpFallFx {
   }
 
   isAnimating(fighterId: string): boolean {
-    return this.drops.has(fighterId);
+    const drop = this.drops.get(fighterId);
+    return Boolean(drop && !drop.landed);
   }
 
-  /** 進頒冠前清掉進行中的掉落，避免把角色藏起來或蓋掉站位 */
+  /** 進頒冠前停掉飛行中的拖尾；角色姿勢留給典禮重排 */
   cancelAll(): void {
     for (const drop of this.drops.values()) {
       this.disposeTrail(drop.trail);
@@ -119,6 +117,7 @@ export class ArenaBumpFallFx {
       elapsedMs: 0,
       spinSign: Math.abs(startX + startZ) % 2 === 0 ? 1 : -1,
       trail,
+      landed: false,
     });
   }
 
@@ -140,16 +139,17 @@ export class ArenaBumpFallFx {
   }
 
   private tick(deltaMs: number): void {
-    for (const [fighterId, drop] of [...this.drops.entries()]) {
+    for (const drop of this.drops.values()) {
+      if (drop.landed) {
+        continue;
+      }
+
       drop.elapsedMs += deltaMs;
-      const progress = Math.min(1, drop.elapsedMs / FALL_DURATION_MS);
-      // 水平先衝出去，再略減速（甩飛感）
-      const outward = OUTWARD_DISTANCE * (1 - (1 - progress) ** 1.65);
-      const height = meteorHeight(drop.startY, progress);
-      const tip = progress * 2.6 * drop.spinSign;
-      const tumble = progress * Math.PI * 1.35;
-      // 飛遠後略縮小，像沖出畫面
-      const shrink = 1 - progress * 0.48;
+      const progress = Math.min(1, drop.elapsedMs / ARENA_BUMP_FALL_DURATION_MS);
+      const outward = OUTWARD_DISTANCE * (1 - (1 - progress) ** 1.55);
+      const height = flightHeight(drop.startY, progress);
+      const tip = progress * 1.1 * drop.spinSign;
+      const tumble = progress * Math.PI * 0.85;
 
       const x = drop.startX + drop.outX * outward;
       const z = drop.startZ + drop.outZ * outward;
@@ -157,26 +157,30 @@ export class ArenaBumpFallFx {
       drop.actor.root.position.set(x, height, z);
       drop.actor.root.rotation.x = tumble;
       drop.actor.root.rotation.z = tip;
-      drop.actor.root.scaling.setAll(shrink);
+      drop.actor.root.scaling.setAll(1);
       drop.trail.emitter = new Vector3(x, height + 0.45, z);
 
       if (progress < 1) {
         continue;
       }
 
-      this.disposeTrail(drop.trail);
-      drop.actor.root.rotation.x = 0;
-      drop.actor.root.rotation.z = 0;
-      drop.actor.root.scaling.setAll(1);
-      drop.actor.holdStandingPose();
-      drop.actor.setSubtreeEnabled(false);
-      drop.actor.root.position.set(
-        drop.startX + drop.outX * OUTWARD_DISTANCE,
-        ARC_END_Y,
-        drop.startZ + drop.outZ * OUTWARD_DISTANCE,
-      );
-      this.drops.delete(fighterId);
+      this.finishLanding(drop);
     }
+  }
+
+  private finishLanding(drop: FallDrop): void {
+    const x = drop.startX + drop.outX * OUTWARD_DISTANCE;
+    const z = drop.startZ + drop.outZ * OUTWARD_DISTANCE;
+
+    this.disposeTrail(drop.trail);
+    drop.actor.setSubtreeEnabled(true);
+    drop.actor.root.scaling.setAll(1);
+    drop.actor.root.rotation.x = 0;
+    drop.actor.root.rotation.z = 0;
+    drop.actor.root.position.set(x, 0, z);
+    // 趴在台外：Death 停最後一幀
+    drop.actor.playFaint();
+    drop.landed = true;
   }
 
   private disposeTrail(trail: ParticleSystem): void {

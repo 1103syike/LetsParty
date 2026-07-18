@@ -1,9 +1,8 @@
 import type { MiniGameInstance } from '@/minigames/types';
 import {
   VB_BALL_RADIUS,
-  VB_HITBOX_BUMP,
-  VB_HITBOX_Y_MAX_BUMP,
-  VB_HITBOX_Y_MIN,
+  VB_CPU_SOLID_CONTACT,
+  VB_HITBOX_LOCAL_REACH_BONUS,
   VB_PLAYER_BODY_RADIUS,
   VB_TEAMMATE_SEPARATION,
   vbCanHitBall,
@@ -22,19 +21,20 @@ import type { Participant } from '@/types/party';
 import type { PlayerInput } from '@/types/player-input';
 
 const SCORE_TO_WIN = 5;
-/** 放大後的半場（比初版約 +40%） */
-// 略放大半場：對手跑不到就會漏，別靠緊急救球硬撿
-const COURT_HALF_WIDTH = 6.0;
-const COURT_HALF_DEPTH = 8.4;
+/** 放大半場：跑位要喘，深角才有威脅 */
+const COURT_HALF_WIDTH = 7.0;
+const COURT_HALF_DEPTH = 9.6;
 const NET_THICKNESS = 0.12;
 /** 對齊場景懸空網（volleyball-scene netBottomY / netTopY） */
 const NET_BOTTOM_Y = 0.95;
 const NET_TOP_Y = 2.0;
 /** 過網時球心至少要高過網帶這麼多 */
 const NET_CLEAR_Y = NET_TOP_Y + 0.28;
-/** 派對手感：略輕，弧線掛得夠久才跑得及 */
-const GRAVITY = 11;
-const MOVE_SPEED = 6.2;
+/** 接球過網：球心過網心即可（本機手感，勿加嚴） */
+const CROSSED_NET_MIN_OWN_Z = NET_THICKNESS;
+/** 重力略重一點，弧線別掛太久變成無限對敲 */
+const GRAVITY = 12.2;
+const MOVE_SPEED = 5.7;
 /** 跳躍殺球再高一點，摸球點才像扣殺 */
 const JUMP_SPEED = 7.6;
 /** 擊球瞬間球心高度（站立托／墊） */
@@ -49,6 +49,52 @@ const SERVE_HEIGHT = 1.1;
 export type VolleyballTeamId = 'a' | 'b';
 export type VolleyballPhase = 'serve' | 'rally' | 'pointPause' | 'crownAward' | 'finished';
 export type VolleyballHitKind = 'bump' | 'set' | 'spike';
+
+/** 對戰事件（足球式 log／進球歸因） */
+export type VolleyballEventKind =
+  | 'serve'
+  | 'bump'
+  | 'set'
+  | 'spike'
+  | 'spike-kill'
+  | 'ground-goal'
+  | 'out'
+  | 'net-out';
+
+/** 探針／DEV：擊球鏈取證（commit／撞網／出界） */
+export type VolleyballHitTraceKind = 'commitHit' | 'netBounce' | 'out';
+
+export interface VolleyballHitTraceEvent {
+  kind: VolleyballHitTraceKind;
+  actorId: string | null;
+  distXZ: number | null;
+  ball: { x: number; y: number; z: number };
+  lastToucherBefore: string | null;
+  lastToucherAfter: string | null;
+  hitSerial: number;
+  detail?: string;
+}
+
+export interface VolleyballMatchEvent {
+  id: number;
+  kind: VolleyballEventKind;
+  playerId: string | null;
+  teamId: VolleyballTeamId | null;
+}
+
+/** 每人擊球紀錄（像足球計誰的球） */
+export interface VolleyballPlayerRecord {
+  playerId: string;
+  serves: number;
+  bumps: number;
+  sets: number;
+  spikes: number;
+  goals: number;
+  spikeGoals: number;
+  groundGoals: number;
+}
+
+const MAX_MATCH_EVENTS = 18;
 
 export interface VolleyballPlayerSnapshot {
   id: string;
@@ -95,9 +141,24 @@ export interface VolleyballSnapshot {
   spikeBurst: { x: number; z: number } | null;
   /** 遞增：得分特效（含一般得分／殺球得分） */
   scoreFxSerial: number;
-  scoreFxKind: 'normal' | 'spike-kill' | null;
+  scoreFxKind: 'normal' | 'spike-kill' | 'out' | 'net-out' | null;
+  /** 出界時打出界的人（暫停期間顯示） */
+  outPlayerId: string | null;
   /** 這一分是哪一隊拿的（暫停期間顯示） */
   scoringTeam: VolleyballTeamId | null;
+  /** 遞增：漏接呼叫（落地球／被殺球） */
+  missFxSerial: number;
+  /** 漏接的人（暫停期間顯示於角色旁） */
+  missPlayerId: string | null;
+  /** 遞增：完美接球呼叫 */
+  niceReceiveSerial: number;
+  niceReceivePlayerId: string | null;
+  /** 賽點方（null＝還沒） */
+  matchPointTeam: VolleyballTeamId | null;
+  /** 近期對戰 log（新→舊） */
+  matchEvents: VolleyballMatchEvent[];
+  /** 每人擊球／進球統計 */
+  playerRecords: VolleyballPlayerRecord[];
   isCrownCeremony: boolean;
   crownWinnerIds: string[];
   crownAwardDurationMs: number;
@@ -221,6 +282,29 @@ export class VolleyballGame implements MiniGameInstance {
 
   private scoringTeam: VolleyballTeamId | null = null;
 
+  private outPlayerId: string | null = null;
+
+  private missFxSerial = 0;
+
+  private missPlayerId: string | null = null;
+
+  private niceReceiveSerial = 0;
+
+  private niceReceivePlayerId: string | null = null;
+
+  /** 最近一次有效觸球之後是否撞過網（出界文案用） */
+  private touchedNetSinceLastHit = false;
+
+  private readonly hitTrace: VolleyballHitTraceEvent[] = [];
+
+  private static readonly HIT_TRACE_MAX = 48;
+
+  private matchEventSerial = 0;
+
+  private matchEvents: VolleyballMatchEvent[] = [];
+
+  private readonly playerRecords = new Map<string, VolleyballPlayerRecord>();
+
   /**
    * 對手這次觸球是否鎖定漏接（同一 hitSerial + owner 只骰一次）。
    * 不能每幀 random，否則「漏了」下一幀又打到。
@@ -228,6 +312,9 @@ export class VolleyballGame implements MiniGameInstance {
   private opponentMissPlanKey: string | null = null;
 
   private opponentMissOwnerId: string | null = null;
+
+  /** 探針腳本用：關掉緊急救球的隨機漏接，讓斷言可重現 */
+  private debugProbeActive = false;
 
   private queuedActions = new Map<string, {
     bump: boolean;
@@ -237,7 +324,12 @@ export class VolleyballGame implements MiniGameInstance {
     /** 與這次擊球綁定的落點（避免被後續 hover 蓋掉） */
     aimX: number | null;
     aimZ: number | null;
+    /** 本機點擊後持續嘗試觸球的剩餘毫秒（解決「只判一幀」） */
+    hitHoldMs: number;
   }>();
+
+  /** 本機點擊後的觸球窗 */
+  private static readonly LOCAL_HIT_HOLD_MS = 560;
 
   constructor(participants: Participant[], localPlayerId: string | null = null) {
     this.localPlayerId = localPlayerId;
@@ -248,6 +340,7 @@ export class VolleyballGame implements MiniGameInstance {
       ...this.teamAIds.map((id, index) => this.createPlayer(id, 'a', index)),
       ...this.teamBIds.map((id, index) => this.createPlayer(id, 'b', index)),
     ];
+    this.resetPlayerRecords();
   }
 
   start(): void {
@@ -264,7 +357,320 @@ export class VolleyballGame implements MiniGameInstance {
     this.scoreFxSerial = 0;
     this.scoreFxKind = null;
     this.scoringTeam = null;
+    this.outPlayerId = null;
+    this.missFxSerial = 0;
+    this.missPlayerId = null;
+    this.niceReceiveSerial = 0;
+    this.niceReceivePlayerId = null;
+    this.matchEventSerial = 0;
+    this.matchEvents = [];
+    this.resetPlayerRecords();
     this.resetForServe();
+  }
+
+  /** 開發／自動化：強制出界結算，用來驗提示與音效 */
+  debugForceOut(): void {
+    const hitter = this.players[0];
+
+    if (hitter) {
+      this.lastToucherId = hitter.id;
+      this.lastHit = { playerId: hitter.id, kind: 'spike' };
+    }
+
+    this.endPoint(hitter ? oppositeTeam(hitter.teamId) : 'a', { kind: 'out' });
+  }
+
+  /** 探針：列出場上角色（腳本取證用） */
+  debugListPlayers(): Array<{
+    id: string;
+    teamId: VolleyballTeamId;
+    role: VbCpuRole;
+    x: number;
+    y: number;
+    z: number;
+    isLocal: boolean;
+  }> {
+    return this.players.map((player) => ({
+      id: player.id,
+      teamId: player.teamId,
+      role: player.role,
+      x: player.x,
+      y: player.y,
+      z: player.z,
+      isLocal: player.id === this.localPlayerId,
+    }));
+  }
+
+  /**
+   * 探針：擺好 rally 擊球場景（腳本取證用）。
+   * possessionTeam 設為「對方」= 接發球；設為同隊 = 已控球。
+   */
+  debugSetupHitScene(options: {
+    hitterId: string;
+    hitter: { x: number; y?: number; z: number };
+    ball: { x: number; y?: number; z: number };
+    possessionTeam: VolleyballTeamId;
+    touchesUsed?: number;
+    /** 給緊急救球：球快落地 */
+    forEmergency?: boolean;
+  }): void {
+    const hitter = this.players.find((player) => player.id === options.hitterId);
+
+    if (!hitter) {
+      throw new Error(`debugSetupHitScene: unknown hitter ${options.hitterId}`);
+    }
+
+    this.phase = 'rally';
+    this.serveLockMs = 0;
+    this.opponentMissOwnerId = null;
+    this.opponentMissPlanKey = null;
+    this.possessionTeam = options.possessionTeam;
+    this.touchesUsed = options.touchesUsed ?? 0;
+    this.lastToucherId = this.players.find((player) => player.id !== options.hitterId)?.id ?? null;
+    this.lastHit = null;
+    this.queuedActions.clear();
+
+    for (const player of this.players) {
+      player.vx = 0;
+      player.vz = 0;
+      player.vy = 0;
+      player.jumpMsLeft = 0;
+      player.blastMsLeft = 0;
+      player.steerX = 0;
+      player.steerZ = 0;
+      player.aimX = null;
+      player.aimZ = null;
+
+      if (player.id === options.hitterId) {
+        player.x = options.hitter.x;
+        player.y = options.hitter.y ?? 0;
+        player.z = options.hitter.z;
+      } else {
+        // 其他人都拉開，避免搶 owner
+        const side = teamSideSign(player.teamId);
+        player.x = player.role === 'back' ? -3 : 3;
+        player.y = 0;
+        player.z = side * 6;
+      }
+    }
+
+    const ballY = options.ball.y ?? (options.forEmergency ? 0.45 : 1.15);
+    this.ball.x = options.ball.x;
+    this.ball.y = ballY;
+    this.ball.z = options.ball.z;
+    this.ball.prevZ = options.ball.z;
+    this.ball.vx = 0;
+    this.ball.vy = options.forEmergency ? -1.2 : -0.4;
+    this.ball.vz = 0;
+    this.ball.active = true;
+  }
+
+  /** 探針：嘗試擊球，回傳距離與是否成功 */
+  debugTryHit(
+    playerId: string,
+    kind: VolleyballHitKind,
+  ): {
+    didHit: boolean;
+    path: 'tryHit';
+    kind: VolleyballHitKind;
+    distBefore: number;
+    distAfter: number;
+    player: { x: number; y: number; z: number };
+    ballBefore: { x: number; y: number; z: number };
+    ballAfter: { x: number; y: number; z: number };
+    ownerId: string | null;
+    solidContact: number;
+  } {
+    const player = this.players.find((entry) => entry.id === playerId);
+
+    if (!player) {
+      throw new Error(`debugTryHit: unknown player ${playerId}`);
+    }
+
+    const ballBefore = { x: this.ball.x, y: this.ball.y, z: this.ball.z };
+    const distBefore = vbHorizontalDistance(player, this.ball);
+    const assignment = this.resolveBallAssignment();
+    const didHit = this.tryHit(player, kind, null);
+    const distAfter = vbHorizontalDistance(player, this.ball);
+
+    return {
+      didHit,
+      path: 'tryHit',
+      kind,
+      distBefore,
+      distAfter,
+      player: { x: player.x, y: player.y, z: player.z },
+      ballBefore,
+      ballAfter: { x: this.ball.x, y: this.ball.y, z: this.ball.z },
+      ownerId: assignment.ownerId,
+      solidContact: VB_CPU_SOLID_CONTACT,
+    };
+  }
+
+  /** 探針：跑一幀緊急救球路徑 */
+  debugTryEmergency(): {
+    didHit: boolean;
+    path: 'emergency';
+    distBefore: number;
+    distAfter: number;
+    lastToucherId: string | null;
+    lastHitKind: VolleyballHitKind | null;
+    solidContact: number;
+  } {
+    const assignment = this.resolveBallAssignment();
+    const owner = assignment.ownerId
+      ? this.players.find((player) => player.id === assignment.ownerId)
+      : undefined;
+    const distBefore = owner ? vbHorizontalDistance(owner, this.ball) : Number.POSITIVE_INFINITY;
+    const hitSerialBefore = this.hitSerial;
+
+    this.debugProbeActive = true;
+
+    try {
+      this.tryCpuEmergencyReturn();
+    } finally {
+      this.debugProbeActive = false;
+    }
+
+    const didHit = this.hitSerial !== hitSerialBefore;
+    const hitter = this.lastToucherId
+      ? this.players.find((player) => player.id === this.lastToucherId)
+      : undefined;
+    const distAfter = hitter ? vbHorizontalDistance(hitter, this.ball) : Number.POSITIVE_INFINITY;
+
+    return {
+      didHit,
+      path: 'emergency',
+      distBefore,
+      distAfter,
+      lastToucherId: this.lastToucherId,
+      lastHitKind: this.lastHit?.kind ?? null,
+      solidContact: VB_CPU_SOLID_CONTACT,
+    };
+  }
+
+  debugClearHitTrace(): void {
+    this.hitTrace.length = 0;
+  }
+
+  debugDumpHitTrace(): VolleyballHitTraceEvent[] {
+    return this.hitTrace.map((entry) => ({
+      ...entry,
+      ball: { ...entry.ball },
+    }));
+  }
+
+  /** 探針：用目前 lastToucher 強制出界結算 */
+  debugForceOutCurrent(): {
+    outPlayerId: string | null;
+    scoreFxKind: VolleyballSnapshot['scoreFxKind'];
+    lastToucherId: string | null;
+  } {
+    const last = this.lastHit?.playerId ?? this.lastToucherId;
+    const hitter = last
+      ? this.players.find((player) => player.id === last)
+      : undefined;
+    this.endPoint(hitter ? oppositeTeam(hitter.teamId) : 'a', { kind: 'out' });
+    return {
+      outPlayerId: this.outPlayerId,
+      scoreFxKind: this.scoreFxKind,
+      lastToucherId: this.lastToucherId,
+    };
+  }
+
+  /**
+   * 探針：注入球飛行狀態（保留 lastToucher／hitSerial，用來測撞網鏈）
+   */
+  debugInjectBallFlight(ball: {
+    x: number;
+    y: number;
+    z: number;
+    vx: number;
+    vy: number;
+    vz: number;
+    active?: boolean;
+  }): void {
+    this.phase = 'rally';
+    this.pointPauseMs = 0;
+    this.scoreFxKind = null;
+    this.ball.x = ball.x;
+    this.ball.y = ball.y;
+    this.ball.z = ball.z;
+    this.ball.prevZ = ball.z;
+    this.ball.vx = ball.vx;
+    this.ball.vy = ball.vy;
+    this.ball.vz = ball.vz;
+    this.ball.active = ball.active ?? true;
+  }
+
+  debugBallVelocity(): { vx: number; vy: number; vz: number } {
+    return { vx: this.ball.vx, vy: this.ball.vy, vz: this.ball.vz };
+  }
+
+  private pushHitTrace(event: Omit<VolleyballHitTraceEvent, 'hitSerial'> & { hitSerial?: number }): void {
+    this.hitTrace.push({
+      ...event,
+      hitSerial: event.hitSerial ?? this.hitSerial,
+    });
+
+    if (this.hitTrace.length > VolleyballGame.HIT_TRACE_MAX) {
+      this.hitTrace.splice(0, this.hitTrace.length - VolleyballGame.HIT_TRACE_MAX);
+    }
+  }
+
+  private resetPlayerRecords(): void {
+    this.playerRecords.clear();
+
+    for (const player of this.players) {
+      this.playerRecords.set(player.id, {
+        playerId: player.id,
+        serves: 0,
+        bumps: 0,
+        sets: 0,
+        spikes: 0,
+        goals: 0,
+        spikeGoals: 0,
+        groundGoals: 0,
+      });
+    }
+  }
+
+  private ensureRecord(playerId: string): VolleyballPlayerRecord {
+    let record = this.playerRecords.get(playerId);
+
+    if (!record) {
+      record = {
+        playerId,
+        serves: 0,
+        bumps: 0,
+        sets: 0,
+        spikes: 0,
+        goals: 0,
+        spikeGoals: 0,
+        groundGoals: 0,
+      };
+      this.playerRecords.set(playerId, record);
+    }
+
+    return record;
+  }
+
+  private pushMatchEvent(
+    kind: VolleyballEventKind,
+    playerId: string | null,
+    teamId: VolleyballTeamId | null,
+  ): void {
+    this.matchEventSerial += 1;
+    this.matchEvents.unshift({
+      id: this.matchEventSerial,
+      kind,
+      playerId,
+      teamId,
+    });
+
+    if (this.matchEvents.length > MAX_MATCH_EVENTS) {
+      this.matchEvents.length = MAX_MATCH_EVENTS;
+    }
   }
 
   onPlayerInput(playerId: string, input: PlayerInput): void {
@@ -307,6 +713,7 @@ export class VolleyballGame implements MiniGameInstance {
       jump: false,
       aimX: null,
       aimZ: null,
+      hitHoldMs: 0,
     };
     const hasHit = input.bump || input.set || input.spike;
 
@@ -317,10 +724,22 @@ export class VolleyballGame implements MiniGameInstance {
       player.aimZ = input.aimZ;
     }
 
-    queued.bump = queued.bump || input.bump;
-    queued.set = queued.set || input.set;
-    queued.spike = queued.spike || input.spike;
+    if (input.spike) {
+      queued.spike = true;
+      queued.bump = false;
+      queued.set = false;
+    } else {
+      queued.bump = queued.bump || input.bump;
+      queued.set = queued.set || input.set;
+    }
+
     queued.jump = queued.jump || input.jump;
+
+    // 本機：點一下後持續判一段時間，球進範圍就打得到
+    if (hasHit && playerId === this.localPlayerId) {
+      queued.hitHoldMs = VolleyballGame.LOCAL_HIT_HOLD_MS;
+    }
+
     this.queuedActions.set(playerId, queued);
   }
 
@@ -371,6 +790,7 @@ export class VolleyballGame implements MiniGameInstance {
         courtHalfWidth: COURT_HALF_WIDTH,
         courtHalfDepth: COURT_HALF_DEPTH,
         netThickness: NET_THICKNESS,
+        cpuSolidContact: VB_CPU_SOLID_CONTACT,
       },
       GRAVITY,
       VB_BALL_RADIUS,
@@ -406,6 +826,9 @@ export class VolleyballGame implements MiniGameInstance {
           this.phase = 'serve';
           this.scoreFxKind = null;
           this.scoringTeam = null;
+          this.outPlayerId = null;
+          this.missPlayerId = null;
+          this.niceReceivePlayerId = null;
           this.spikeBurst = null;
         }
       }
@@ -418,7 +841,7 @@ export class VolleyballGame implements MiniGameInstance {
     }
 
     this.tickPlayers(deltaSec);
-    this.resolveQueuedActions();
+    this.resolveQueuedActions(deltaMs);
 
     if (this.ball.active) {
       // 球快落地且該半場是 CPU 負責 → 強制打過網（AI 摸空也不會卡死）
@@ -583,7 +1006,17 @@ export class VolleyballGame implements MiniGameInstance {
       spikeBurst: this.spikeBurst,
       scoreFxSerial: this.scoreFxSerial,
       scoreFxKind: this.phase === 'pointPause' ? this.scoreFxKind : null,
+      outPlayerId: this.phase === 'pointPause' ? this.outPlayerId : null,
       scoringTeam: this.phase === 'pointPause' ? this.scoringTeam : null,
+      missFxSerial: this.missFxSerial,
+      missPlayerId: this.phase === 'pointPause' ? this.missPlayerId : null,
+      niceReceiveSerial: this.niceReceiveSerial,
+      niceReceivePlayerId: this.niceReceivePlayerId,
+      matchPointTeam: this.resolveMatchPointTeam(),
+      matchEvents: this.matchEvents.map((event) => ({ ...event })),
+      playerRecords: this.players.map((player) => ({
+        ...this.ensureRecord(player.id),
+      })),
       isCrownCeremony: this.phase === 'crownAward',
       crownWinnerIds: this.winnerTeam === 'a'
         ? [...this.teamAIds]
@@ -697,6 +1130,25 @@ export class VolleyballGame implements MiniGameInstance {
     return { land: null, ownerId: null, landTimeSec: null };
   }
 
+  /** 差 1 分即將贏（且領先）→ 賽點 */
+  private resolveMatchPointTeam(): VolleyballTeamId | null {
+    if (this.phase === 'finished' || this.phase === 'crownAward') {
+      return null;
+    }
+
+    const matchPointScore = SCORE_TO_WIN - 1;
+
+    if (this.scoreA >= matchPointScore && this.scoreA > this.scoreB) {
+      return 'a';
+    }
+
+    if (this.scoreB >= matchPointScore && this.scoreB > this.scoreA) {
+      return 'b';
+    }
+
+    return null;
+  }
+
   /**
    * 落點圓環進度：球下降且距落地進入擊球窗時往 1 收攏。
    */
@@ -773,6 +1225,7 @@ export class VolleyballGame implements MiniGameInstance {
         courtHalfWidth: COURT_HALF_WIDTH,
         courtHalfDepth: COURT_HALF_DEPTH,
         netThickness: NET_THICKNESS,
+        cpuSolidContact: VB_CPU_SOLID_CONTACT,
       },
     );
 
@@ -828,6 +1281,7 @@ export class VolleyballGame implements MiniGameInstance {
         courtHalfWidth: COURT_HALF_WIDTH,
         courtHalfDepth: COURT_HALF_DEPTH,
         netThickness: NET_THICKNESS,
+        cpuSolidContact: VB_CPU_SOLID_CONTACT,
       });
       // 發球方後排再往後一點
       const side = teamSideSign(player.teamId);
@@ -849,6 +1303,7 @@ export class VolleyballGame implements MiniGameInstance {
     this.possessionTeam = this.servingTeam;
     this.touchesUsed = 0;
     this.lastToucherId = null;
+    this.touchedNetSinceLastHit = false;
     this.serveLockMs = 0;
     this.spikeBurst = null;
     this.ball.active = false;
@@ -869,11 +1324,12 @@ export class VolleyballGame implements MiniGameInstance {
       return;
     }
 
-    // 球放在身前（朝網），不要放背後
+    // 球放在身前（朝網）；距離必須 ≤ hitbox，否則收緊後永遠發不出去
     const side = teamSideSign(server.teamId);
     this.ball.x = server.x;
     this.ball.y = SERVE_HEIGHT;
-    this.ball.z = server.z - side * 0.65;
+    // 對齊 CPU 嚴格 hitbox（≈0.58），球要放進圈內才發得出去
+    this.ball.z = server.z - side * 0.4;
     this.ball.prevZ = this.ball.z;
     this.ball.vx = 0;
     this.ball.vy = 0;
@@ -1010,7 +1466,7 @@ export class VolleyballGame implements MiniGameInstance {
     }
   }
 
-  private resolveQueuedActions(): void {
+  private resolveQueuedActions(deltaMs: number): void {
     for (const player of this.players) {
       const action = this.queuedActions.get(player.id);
 
@@ -1022,6 +1478,7 @@ export class VolleyballGame implements MiniGameInstance {
         player.vy = JUMP_SPEED;
         player.jumpMsLeft = 660;
         player.y = 0.05;
+        action.jump = false;
       }
 
       const shotAim = action.aimX != null && action.aimZ != null
@@ -1030,12 +1487,52 @@ export class VolleyballGame implements MiniGameInstance {
           ? { x: player.aimX, z: player.aimZ }
           : null;
 
+      const isLocal = player.id === this.localPlayerId;
+      let didHit = false;
+
       if (action.spike) {
-        this.tryHit(player, 'spike', shotAim);
+        didHit = this.tryHit(player, 'spike', shotAim);
+        // 殺不到時本機仍可墊到（右鍵窗內進範圍就打）
+        if (!didHit && isLocal) {
+          didHit = this.tryHit(player, 'bump', shotAim);
+        }
       } else if (action.set) {
-        this.tryHit(player, 'set', shotAim);
+        didHit = this.tryHit(player, 'set', shotAim);
       } else if (action.bump) {
-        this.tryHit(player, 'bump', shotAim);
+        didHit = this.tryHit(player, 'bump', shotAim);
+      }
+
+      const hasSwing = action.bump || action.set || action.spike;
+
+      if (didHit || !hasSwing) {
+        this.queuedActions.set(player.id, {
+          bump: false,
+          set: false,
+          spike: false,
+          jump: false,
+          aimX: null,
+          aimZ: null,
+          hitHoldMs: 0,
+        });
+        continue;
+      }
+
+      if (isLocal && action.hitHoldMs > 0) {
+        action.hitHoldMs = Math.max(0, action.hitHoldMs - deltaMs);
+
+        if (action.hitHoldMs <= 0) {
+          this.queuedActions.set(player.id, {
+            bump: false,
+            set: false,
+            spike: false,
+            jump: false,
+            aimX: null,
+            aimZ: null,
+            hitHoldMs: 0,
+          });
+        }
+
+        continue;
       }
 
       this.queuedActions.set(player.id, {
@@ -1045,6 +1542,7 @@ export class VolleyballGame implements MiniGameInstance {
         jump: false,
         aimX: null,
         aimZ: null,
+        hitHoldMs: 0,
       });
     }
   }
@@ -1053,9 +1551,9 @@ export class VolleyballGame implements MiniGameInstance {
     player: CourtPlayer,
     kind: VolleyballHitKind,
     shotAim: { x: number; z: number } | null,
-  ): void {
+  ): boolean {
     if (this.phase !== 'serve' && this.phase !== 'rally') {
-      return;
+      return false;
     }
 
     // 發球鎖只擋「發球方隊友」二次觸球；接發方隨時可摸
@@ -1065,7 +1563,7 @@ export class VolleyballGame implements MiniGameInstance {
       && player.teamId === this.possessionTeam
       && player.id !== this.lastToucherId
     ) {
-      return;
+      return false;
     }
 
     const isJumping = player.jumpMsLeft > 0 || player.y > 0.05 || player.vy > 0.1;
@@ -1074,7 +1572,7 @@ export class VolleyballGame implements MiniGameInstance {
 
     // CPU 只接「屬於自己」的球
     if (isCpu && assignment.ownerId && player.id !== assignment.ownerId) {
-      return;
+      return false;
     }
 
     // 對手這次觸球已鎖定漏接：不打、也不吃緊急救球
@@ -1083,29 +1581,43 @@ export class VolleyballGame implements MiniGameInstance {
       && this.isOpponentCpuPlayer(player)
       && this.opponentMissOwnerId === player.id
     ) {
-      return;
+      return false;
     }
 
-    // 隊友 CPU 放寬；對手略放（差一點也算），禁止隔空遠距摸
-    const canHit = isCpu && this.phase === 'rally' && !this.isOpponentCpuPlayer(player)
-      ? this.canCpuReachBall(player)
-      : this.isOpponentCpuPlayer(player)
-        ? this.canOpponentHitBall(player, kind, isJumping)
-        : vbCanHitBall(player, this.ball, kind, { isJumping });
+    // 本機才加寬；CPU 下面再用實心距離卡隔空
+    const canReach = isCpu
+      ? vbCanHitBall(player, this.ball, kind, { isJumping, profile: 'cpu' })
+      : vbCanHitBall(player, this.ball, kind, {
+        isJumping,
+        profile: 'local',
+        reachBonus: VB_HITBOX_LOCAL_REACH_BONUS,
+      });
 
-    if (!canHit) {
-      return;
+    if (!canReach) {
+      return false;
+    }
+
+    // CPU：可托可打，但水平距離必須真的貼球（不解本機）
+    if (isCpu && vbHorizontalDistance(player, this.ball) > VB_CPU_SOLID_CONTACT) {
+      return false;
     }
 
     const side = teamSideSign(player.teamId);
+    const ownDepth = this.ball.z * side;
+    const isReceiving = this.phase === 'rally' && this.possessionTeam !== player.teamId;
 
-    // 接發：球剛過網（略偏對面）也允許摸，避免 silent fail
-    if (this.phase === 'rally' && this.ball.z * side < -0.4) {
-      return;
+    if (this.phase === 'rally') {
+      if (isReceiving) {
+        if (ownDepth < CROSSED_NET_MIN_OWN_Z) {
+          return false;
+        }
+      } else if (ownDepth < -0.15) {
+        return false;
+      }
     }
 
     if (this.lastToucherId === player.id && this.phase === 'rally') {
-      return;
+      return false;
     }
 
     if (this.possessionTeam !== player.teamId && this.phase === 'rally') {
@@ -1115,21 +1627,18 @@ export class VolleyballGame implements MiniGameInstance {
 
     if (this.touchesUsed >= MAX_TOUCHES && this.phase === 'rally') {
       this.endPoint(oppositeTeam(player.teamId), { kind: 'land' });
-      return;
+      return false;
     }
 
     const wasServe = this.phase === 'serve';
     let resolvedKind: VolleyballHitKind = wasServe ? 'bump' : kind;
-    const teammate = this.players.find(
-      (entry) => entry.teamId === player.teamId && entry.id !== player.id,
-    );
 
-    // CPU：有隊友時第一觸舉；殺球必須有跳，否則改墊（避免站著「殺」卻判不到）
+    // CPU：照輸入種類打（可直接擊球）；殺球要真的在跳
     if (isCpu && !wasServe) {
-      if (teammate && this.touchesUsed < 1) {
-        resolvedKind = 'set';
-      } else if (kind === 'spike' && isJumping) {
+      if (kind === 'spike' && isJumping) {
         resolvedKind = 'spike';
+      } else if (kind === 'set') {
+        resolvedKind = 'set';
       } else {
         resolvedKind = 'bump';
       }
@@ -1140,7 +1649,20 @@ export class VolleyballGame implements MiniGameInstance {
       player.aimZ = shotAim.z;
     }
 
+    // 本機接對方來球且時機漂亮 → 神接呼叫（不動 hitbox，只加 UI）
+    if (
+      !isCpu
+      && !wasServe
+      && isReceiving
+      && player.id === this.localPlayerId
+      && this.computeHitTiming(assignment.landTimeSec) >= 0.85
+    ) {
+      this.niceReceiveSerial += 1;
+      this.niceReceivePlayerId = player.id;
+    }
+
     this.commitHit(player, resolvedKind, wasServe);
+    return true;
   }
 
   /**
@@ -1152,18 +1674,28 @@ export class VolleyballGame implements MiniGameInstance {
       return;
     }
 
-    // 只在「快落地」時介入，避免搶正常擊球
-    if (this.ball.y > 0.85 || this.ball.vy >= 0) {
+    // 只在「快落地」時介入；對手側更晚，避免硬撿成無限對敲
+    const local = this.players.find((player) => player.id === this.localPlayerId);
+    const assignmentEarly = this.resolveBallAssignment();
+    const earlyOwner = assignmentEarly.ownerId
+      ? this.players.find((player) => player.id === assignmentEarly.ownerId)
+      : undefined;
+    const isOpponentSide = Boolean(
+      local && earlyOwner && earlyOwner.teamId !== local.teamId,
+    );
+    const yGate = isOpponentSide ? 0.55 : 0.85;
+
+    if (this.ball.y > yGate || this.ball.vy >= 0) {
       return;
     }
 
-    const assignment = this.resolveBallAssignment();
+    const assignment = assignmentEarly;
 
     if (!assignment.ownerId || !assignment.land) {
       return;
     }
 
-    const owner = this.players.find((player) => player.id === assignment.ownerId);
+    const owner = earlyOwner;
 
     if (!owner) {
       return;
@@ -1171,26 +1703,24 @@ export class VolleyballGame implements MiniGameInstance {
 
     const landingTeam = owner.teamId;
     const side = teamSideSign(landingTeam);
-    const local = this.players.find((player) => player.id === this.localPlayerId);
-    const isOpponentOwner = Boolean(local && local.teamId !== owner.teamId);
+    const isOpponentOwner = isOpponentSide;
 
-    if (this.ball.z * side < 0.25) {
+    if (this.ball.z * side < CROSSED_NET_MIN_OWN_Z) {
       return;
     }
 
-    // 對手晚救：人已到球邊就該救（對打）；鎖定漏接才不救
     if (isOpponentOwner) {
       if (this.opponentMissOwnerId === owner.id) {
         return;
       }
 
-      // 晚救也要真的貼球，不要隔空撥回去
-      if (this.ball.y > 0.62 || !vbCanHitBall(owner, this.ball, 'bump')) {
+      // 對手側已用更低 yGate；這裡再卡嚴格 hitbox（探針 close 約 y=0.45 仍要過）
+      if (!vbCanHitBall(owner, this.ball, 'bump', { profile: 'cpu' })) {
         return;
       }
 
-      // 人都到位了，八成救起來
-      if (Math.random() < 0.2) {
+      // 對手緊急救球成功率壓低（探針模式關掉隨機）
+      if (!this.debugProbeActive && Math.random() < 0.45) {
         return;
       }
     }
@@ -1211,8 +1741,7 @@ export class VolleyballGame implements MiniGameInstance {
         return;
       }
 
-      // 隊友晚救也要進 hitbox，避免隔空打
-      if (!vbCanHitBall(saver, this.ball, 'bump')) {
+      if (!vbCanHitBall(saver, this.ball, 'bump', { profile: 'cpu' })) {
         return;
       }
 
@@ -1225,17 +1754,21 @@ export class VolleyballGame implements MiniGameInstance {
         return;
       }
 
-      const hasTeammate = true;
-      this.commitHit(saver, hasTeammate && this.touchesUsed < 1 ? 'set' : 'bump', false);
+      // 緊急救球也要實心距離（與 tryHit 同一套）
+      if (vbHorizontalDistance(saver, this.ball) > VB_CPU_SOLID_CONTACT) {
+        return;
+      }
+
+      this.commitHit(saver, this.touchesUsed < 1 ? 'set' : 'bump', false);
       return;
     }
 
-    // CPU owner（含對手晚救）：進 hitbox／略放才緊急出手
-    if (
-      isOpponentOwner
-        ? !this.canOpponentHitBall(owner, 'bump', false)
-        : !vbCanHitBall(owner, this.ball, 'bump')
-    ) {
+    // CPU owner：嚴格 hitbox + 實心距離
+    if (!vbCanHitBall(owner, this.ball, 'bump', { profile: 'cpu' })) {
+      return;
+    }
+
+    if (vbHorizontalDistance(owner, this.ball) > VB_CPU_SOLID_CONTACT) {
       return;
     }
 
@@ -1263,6 +1796,9 @@ export class VolleyballGame implements MiniGameInstance {
     kind: VolleyballHitKind,
     wasServe: boolean,
   ): void {
+    const lastToucherBefore = this.lastToucherId;
+    const distXZ = vbHorizontalDistance(player, this.ball);
+
     this.applyHitVelocity(player, kind, wasServe);
     this.ball.active = true;
     this.lastToucherId = player.id;
@@ -1270,32 +1806,38 @@ export class VolleyballGame implements MiniGameInstance {
     this.possessionTeam = player.teamId;
     this.hitSerial += 1;
     this.lastHit = { playerId: player.id, kind };
+    this.touchedNetSinceLastHit = false;
+
+    this.pushHitTrace({
+      kind: 'commitHit',
+      actorId: player.id,
+      distXZ,
+      ball: { x: this.ball.x, y: this.ball.y, z: this.ball.z },
+      lastToucherBefore,
+      lastToucherAfter: player.id,
+      detail: kind,
+    });
+
+    const record = this.ensureRecord(player.id);
 
     if (wasServe) {
+      record.serves += 1;
+      this.pushMatchEvent('serve', player.id, player.teamId);
       this.phase = 'rally';
       this.serveLockMs = 450;
-    }
-  }
-
-  /** 隊友 CPU 摸球略放（幫玩家），但仍要進一般 hitbox 附近 */
-  private canCpuReachBall(player: CourtPlayer): boolean {
-    const range = VB_HITBOX_BUMP + 0.08;
-    const maxY = VB_HITBOX_Y_MAX_BUMP + 0.15;
-
-    if (vbHorizontalDistance(player, this.ball) > range) {
-      return false;
+      return;
     }
 
-    return this.ball.y >= VB_HITBOX_Y_MIN && this.ball.y <= maxY;
-  }
-
-  /** 對手摸球：跟玩家同一套，不准遠距揮空打中 */
-  private canOpponentHitBall(
-    player: CourtPlayer,
-    kind: VolleyballHitKind,
-    isJumping: boolean,
-  ): boolean {
-    return vbCanHitBall(player, this.ball, kind, { isJumping });
+    if (kind === 'set') {
+      record.sets += 1;
+      this.pushMatchEvent('set', player.id, player.teamId);
+    } else if (kind === 'spike') {
+      record.spikes += 1;
+      this.pushMatchEvent('spike', player.id, player.teamId);
+    } else {
+      record.bumps += 1;
+      this.pushMatchEvent('bump', player.id, player.teamId);
+    }
   }
 
   /**
@@ -1333,27 +1875,43 @@ export class VolleyballGame implements MiniGameInstance {
       return;
     }
 
-    // 預設幾乎不鎖死；真正來不及才偶發漏
+    // 來不及／邊角／接殺球：比較會漏
     const distToLand = land
       ? Math.hypot(owner.x - land.x, owner.z - land.z)
       : 0;
     const isLateAndFar = landTimeSec != null
-      && landTimeSec < 0.28
-      && distToLand > 2.4;
-    const missRate = isLateAndFar ? 0.35 : 0.04;
+      && landTimeSec < 0.32
+      && distToLand > 2.2;
+    const nearSideline = land
+      ? Math.abs(land.x) > COURT_HALF_WIDTH - 1.8
+        || Math.abs(land.z) > COURT_HALF_DEPTH - 1.8
+      : false;
+    const vsSpike = this.lastHit?.kind === 'spike';
+
+    let missRate = isLateAndFar ? 0.55 : 0.1;
+
+    if (nearSideline) {
+      missRate += 0.12;
+    }
+
+    if (vsSpike) {
+      missRate += 0.18;
+    }
+
+    missRate = clamp(missRate, 0, 0.85);
 
     this.opponentMissOwnerId = Math.random() < missRate ? owner.id : null;
   }
 
-  /** 對面半場落點（硬性在對方場內、離邊線遠一點防出界） */
+  /** 對面半場落點（可打深角；自動瞄預設仍在場內） */
   private opponentLandZ(side: number, depth: number): number {
-    const magnitude = clamp(depth, 2.8, COURT_HALF_DEPTH - 2.2);
+    const magnitude = clamp(depth, 2.8, COURT_HALF_DEPTH - 0.55);
     return -side * magnitude;
   }
 
   /**
    * 無瞄準過網球落點。
-   * easy：對手 CPU 用——常打向有人的位置／中場，比較好接。
+   * easy：對手 CPU 打給本機時略準，但不再往腳下送分。
    */
   private pickOpenOpponentLandSpot(
     side: number,
@@ -1361,33 +1919,32 @@ export class VolleyballGame implements MiniGameInstance {
     defenders: Array<{ x: number; z: number }>,
     easy = false,
   ): { x: number; z: number } {
-    // 離邊線遠一點，快殺才不會算出界
-    const xLimit = COURT_HALF_WIDTH - 1.9;
+    const xLimit = COURT_HALF_WIDTH - 0.65;
 
-    // 放水：多半往防守者附近或中場砸
+    // 略準：偶爾往人附近，但多數仍拉開
     if (easy) {
-      if (defenders.length > 0 && Math.random() < 0.7) {
+      if (defenders.length > 0 && Math.random() < 0.35) {
         const target = defenders[Math.floor(Math.random() * defenders.length)]!;
-        const depth = 3.0 + Math.random() * 1.4;
+        const depth = 3.4 + Math.random() * 2.2;
 
         return {
-          x: clamp(target.x + (Math.random() - 0.5) * 1.4, -xLimit, xLimit),
+          x: clamp(target.x + (Math.random() - 0.5) * 2.2, -xLimit, xLimit),
           z: this.opponentLandZ(side, depth),
         };
       }
 
       return {
-        x: clamp((Math.random() - 0.5) * 2.2, -xLimit, xLimit),
-        z: this.opponentLandZ(side, 3.2 + Math.random() * 1.1),
+        x: clamp((Math.random() - 0.5) * xLimit * 1.6, -xLimit, xLimit),
+        z: this.opponentLandZ(side, 3.6 + Math.random() * 2.8),
       };
     }
 
-    const xs = [-xLimit, -xLimit * 0.55, -xLimit * 0.2, xLimit * 0.2, xLimit * 0.55, xLimit];
+    const xs = [-xLimit, -xLimit * 0.7, -xLimit * 0.35, xLimit * 0.35, xLimit * 0.7, xLimit];
     const depths = kind === 'spike'
-      ? [3.0, 3.8, 4.6, 5.4]
+      ? [3.6, 4.8, 6.2, 7.4, 8.6]
       : kind === 'serve'
-        ? [3.2, 4.0, 5.0, 5.8]
-        : [3.0, 3.8, 4.8, 5.6, 6.2];
+        ? [3.4, 4.6, 5.8, 7.2]
+        : [3.2, 4.4, 5.8, 7.0, 8.2];
 
     type Candidate = { x: number; z: number; score: number };
     const candidates: Candidate[] = [];
@@ -1428,21 +1985,20 @@ export class VolleyballGame implements MiniGameInstance {
     return Boolean(local && local.teamId !== player.teamId && player.id !== this.localPlayerId);
   }
 
-  /** 把滑鼠落點夾到對面半場可用區（離邊線遠一點，防快殺出界） */
+  /** 對方半場＋場外緩衝都可瞄（出界機制才有意義）；不可瞄回己方 */
   private clampOpponentAim(
     side: number,
     aimX: number,
     aimZ: number,
   ): { x: number; z: number } {
-    const minClear = NET_THICKNESS + 2.2;
-    const edgeX = COURT_HALF_WIDTH - 1.85;
-    const edgeZ = COURT_HALF_DEPTH - 2.1;
+    const minClear = NET_THICKNESS + 1.5;
+    const outPad = 2.8;
 
     return {
-      x: clamp(aimX, -edgeX, edgeX),
+      x: clamp(aimX, -(COURT_HALF_WIDTH + outPad), COURT_HALF_WIDTH + outPad),
       z: side < 0
-        ? clamp(aimZ, minClear, edgeZ)
-        : clamp(aimZ, -edgeZ, -minClear),
+        ? clamp(aimZ, minClear, COURT_HALF_DEPTH + outPad)
+        : clamp(aimZ, -(COURT_HALF_DEPTH + outPad), -minClear),
     };
   }
 
@@ -1474,11 +2030,10 @@ export class VolleyballGame implements MiniGameInstance {
   }
 
   /**
-   * 過網球（硬保證）：
-   * 1. 起點一定在己方
-   * 2. 落點一定在對方場內
-   * 3. 過網高度必須高過懸空網（維持拋物線，不穿網）
-   * 4. 若預測落地仍在己方 → 強制改 vz
+   * 過網球：
+   * 1. 起點留在觸球位置（禁止瞬移到網前）
+   * 2. 落點可對準對方場內或場外（界外 aim 不強制夾回）
+   * 3. 過網高度必須高過懸空網
    */
   private launchOverNet(
     side: number,
@@ -1490,17 +2045,16 @@ export class VolleyballGame implements MiniGameInstance {
     options?: { fast?: boolean },
   ): void {
     const fast = Boolean(options?.fast);
-    const ownClear = NET_THICKNESS + 1.25;
-    const oppClear = NET_THICKNESS + 2.5;
-    // 殺球：過網淨空略緊、飛行更短，才砸得快
+    const oppClear = NET_THICKNESS + 2.2;
+    const outPad = 2.8;
+    // 殺球：剛過網頂即可（比一般墊球低），但仍要穩過網帶
     const clearY = fast ? NET_TOP_Y + 0.12 : NET_CLEAR_Y;
-    const minLandSec = fast ? 0.36 : 0.55;
-    const edgePad = fast ? 2.0 : 1.35;
+    const minLandSec = fast ? 0.28 : 0.48;
 
-    // 起點：己方、至少離網 ownClear
+    // 起點：保留觸球點；若球已偏到網外才拉回己方
     const startZ = side < 0
-      ? Math.min(this.ball.z, -ownClear)
-      : Math.max(this.ball.z, ownClear);
+      ? Math.min(this.ball.z, -NET_THICKNESS - 0.2)
+      : Math.max(this.ball.z, NET_THICKNESS + 0.2);
     this.ball.z = startZ;
     this.ball.prevZ = startZ;
 
@@ -1508,34 +2062,39 @@ export class VolleyballGame implements MiniGameInstance {
     this.ball.y = startY;
     this.ball.x = clamp(this.ball.x, -COURT_HALF_WIDTH + 0.5, COURT_HALF_WIDTH - 0.5);
 
-    const duration = clamp(flightSec, fast ? 0.36 : 0.55, fast ? 0.72 : 1.6);
+    const duration = clamp(flightSec, fast ? 0.28 : 0.48, fast ? 0.55 : 1.25);
     this.ball.vy = (VB_BALL_RADIUS - startY) / duration + 0.5 * GRAVITY * duration + Math.max(0, loft);
 
     let targetZ = targetZOverride ?? this.opponentLandZ(side, landDepth);
+    const aimOut = Math.abs(targetX) > COURT_HALF_WIDTH
+      || Math.abs(targetZ) > COURT_HALF_DEPTH;
 
-    // 落點：對方場內、至少離網 oppClear；快殺再離邊線遠一點
-    if (side < 0) {
-      targetZ = clamp(Math.max(targetZ, oppClear), oppClear, COURT_HALF_DEPTH - edgePad);
+    if (aimOut) {
+      // 故意／瞄到界外：保留出界落點，只限最大場外距離
+      if (side < 0) {
+        targetZ = clamp(Math.max(targetZ, oppClear), oppClear, COURT_HALF_DEPTH + outPad);
+      } else {
+        targetZ = clamp(Math.min(targetZ, -oppClear), -(COURT_HALF_DEPTH + outPad), -oppClear);
+      }
+    } else if (side < 0) {
+      targetZ = clamp(Math.max(targetZ, oppClear), oppClear, COURT_HALF_DEPTH - 0.35);
     } else {
-      targetZ = clamp(Math.min(targetZ, -oppClear), -COURT_HALF_DEPTH + edgePad, -oppClear);
+      targetZ = clamp(Math.min(targetZ, -oppClear), -COURT_HALF_DEPTH + 0.35, -oppClear);
     }
 
-    const targetXClamped = clamp(
-      targetX,
-      -COURT_HALF_WIDTH + edgePad,
-      COURT_HALF_WIDTH - edgePad,
-    );
+    const targetXClamped = aimOut
+      ? clamp(targetX, -(COURT_HALF_WIDTH + outPad), COURT_HALF_WIDTH + outPad)
+      : clamp(targetX, -COURT_HALF_WIDTH + 0.35, COURT_HALF_WIDTH - 0.35);
 
-    // 先對準落點，再抬高 vy 直到過網淨空夠（水平速度跟著重算，弧線仍對準）
+    // 先對準落點，再抬高 vy 直到過網淨空夠
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const landSec = Math.max(minLandSec, this.predictLandTimeSec(startY, this.ball.vy));
       this.ball.vx = (targetXClamped - this.ball.x) / landSec;
       this.ball.vz = (targetZ - startZ) / landSec;
 
-      // 快殺水平速度上限，避免數值誤差把球甩出界
       if (fast) {
         const horizontal = Math.hypot(this.ball.vx, this.ball.vz);
-        const maxHorizontal = 16.5;
+        const maxHorizontal = 19.5;
 
         if (horizontal > maxHorizontal) {
           const scale = maxHorizontal / horizontal;
@@ -1555,18 +2114,62 @@ export class VolleyballGame implements MiniGameInstance {
       }
 
       const tNet = -startZ / this.ball.vz;
-      if (tNet <= 0.05 || tNet >= landSec) {
+      if (tNet <= 0) {
         break;
       }
 
-      const yAtNet = startY + this.ball.vy * tNet - 0.5 * GRAVITY * tNet * tNet;
+      // 限速後過網時間可能晚於落地預測：仍要抬高，不能直接放棄
+      if (tNet >= landSec) {
+        if (!fast) {
+          break;
+        }
+
+        this.ball.vy += 0.55;
+        continue;
+      }
+
+      const yAtNet = tNet <= 0.05
+        ? startY
+        : startY + this.ball.vy * tNet - 0.5 * GRAVITY * tNet * tNet;
       if (yAtNet >= clearY) {
         break;
       }
 
-      // 殺球少加 loft，避免又被抬成高拋好接
-      this.ball.vy += fast ? 0.35 : 0.65;
+      this.ball.vy += fast ? 0.48 : 0.55;
     }
+
+    // 歐拉積分比解析略矮：殺球最後再保證過網頂有餘裕
+    if (fast && Math.abs(this.ball.vz) > 0.05) {
+      const tNet = -startZ / this.ball.vz;
+      if (tNet > 0 && tNet < 1.2) {
+        const yAtNet = startY + this.ball.vy * tNet - 0.5 * GRAVITY * tNet * tNet;
+        const needY = NET_TOP_Y + 0.18;
+        if (yAtNet < needY) {
+          this.ball.vy += (needY - yAtNet) / tNet + 0.35;
+        }
+      }
+    }
+  }
+
+  /** 觸球瞬間微調球位（禁止大距離瞬移，那才是隔空感的來源） */
+  private attachBallToHitter(player: CourtPlayer): void {
+    const side = teamSideSign(player.teamId);
+    const dist = vbHorizontalDistance(player, this.ball);
+
+    if (dist > 0.02) {
+      const pull = Math.min(0.12, dist * 0.28);
+      const nx = (player.x - this.ball.x) / dist;
+      const nz = (player.z - this.ball.z) / dist;
+      this.ball.x += nx * pull;
+      this.ball.z += nz * pull;
+    }
+
+    // 只保證不掉到對方半場，不把球拽到角色固定身前
+    this.ball.z = side < 0
+      ? Math.min(this.ball.z, -NET_THICKNESS - 0.15)
+      : Math.max(this.ball.z, NET_THICKNESS + 0.15);
+    this.ball.y = Math.max(this.ball.y, player.y + 0.75);
+    this.ball.prevZ = this.ball.z;
   }
 
   private applyHitVelocity(
@@ -1580,6 +2183,9 @@ export class VolleyballGame implements MiniGameInstance {
     );
     const hasAim = player.aimX != null && player.aimZ != null;
 
+    // 先對齊觸球點，再算出射（避免球在別處飛走像隔空敲）
+    this.attachBallToHitter(player);
+
     if (kind === 'set' && !isServe) {
       let targetX = player.x;
       let targetZ = player.z - side * 0.4;
@@ -1591,13 +2197,15 @@ export class VolleyballGame implements MiniGameInstance {
         targetZ = aimed.z;
       } else if (teammate) {
         // 舉給隊友：落在隊友身前偏網一點，方便殺球
+        const minDepth = NET_THICKNESS + 1.5;
+        const rawDepth = Math.max(Math.abs(teammate.z) - 0.55, minDepth);
         targetX = clamp(
           teammate.x,
           -COURT_HALF_WIDTH + 1.2,
           COURT_HALF_WIDTH - 1.2,
         );
         targetZ = clamp(
-          teammate.z - side * 0.55,
+          side * rawDepth,
           side < 0 ? -COURT_HALF_DEPTH + 1.5 : NET_THICKNESS + 1.5,
           side < 0 ? -NET_THICKNESS - 1.5 : COURT_HALF_DEPTH - 1.5,
         );
@@ -1613,7 +2221,6 @@ export class VolleyballGame implements MiniGameInstance {
       const startY = Math.max(this.ball.y, HIT_LIFT_Y);
       this.ball.y = startY;
       this.ball.prevZ = this.ball.z;
-      // 舉高一點方便殺球，但別高到摸不到
       const duration = hasAim ? 1.1 : 1.15;
       this.ball.vy = (VB_BALL_RADIUS - startY) / duration + 0.5 * GRAVITY * duration + (hasAim ? 0.6 : 1.15);
       const landSec = this.predictLandTimeSec(startY, this.ball.vy);
@@ -1643,7 +2250,7 @@ export class VolleyballGame implements MiniGameInstance {
           side,
           aimed.x,
           Math.abs(aimed.z),
-          0.42,
+          0.34,
           0.55,
           aimed.z,
           spikeOpts,
@@ -1654,8 +2261,8 @@ export class VolleyballGame implements MiniGameInstance {
           side,
           spot.x,
           Math.abs(spot.z),
-          0.38 + Math.random() * 0.1,
-          0.4 + Math.random() * 0.45,
+          0.3 + Math.random() * 0.06,
+          0.28 + Math.random() * 0.16,
           spot.z,
           spikeOpts,
         );
@@ -1666,13 +2273,13 @@ export class VolleyballGame implements MiniGameInstance {
       return;
     }
 
-    // 擊球／發球：拉長飛行時間，弧線掛過網再落地
+    // 擊球／發球：比以前更快更平，仍比殺球慢
     if (hasAim && !isServe) {
       const aimed = this.clampOpponentAim(side, player.aimX!, player.aimZ!);
-      this.launchOverNet(side, aimed.x, Math.abs(aimed.z), 1.15, 1.85, aimed.z);
+      this.launchOverNet(side, aimed.x, Math.abs(aimed.z), 0.82, 1.15, aimed.z);
     } else if (hasAim && isServe) {
       const aimed = this.clampOpponentAim(side, player.aimX!, player.aimZ!);
-      this.launchOverNet(side, aimed.x, Math.abs(aimed.z), 1.3, 2.35, aimed.z);
+      this.launchOverNet(side, aimed.x, Math.abs(aimed.z), 1.05, 1.75, aimed.z);
     } else {
       const spot = this.pickOpenOpponentLandSpot(
         side,
@@ -1680,8 +2287,8 @@ export class VolleyballGame implements MiniGameInstance {
         defenders,
         easyAim,
       );
-      const flight = isServe ? 1.25 + Math.random() * 0.25 : 1.05 + Math.random() * 0.28;
-      const loft = isServe ? 2.4 + Math.random() * 0.7 : 1.9 + Math.random() * 0.85;
+      const flight = isServe ? 1.05 + Math.random() * 0.2 : 0.78 + Math.random() * 0.22;
+      const loft = isServe ? 1.85 + Math.random() * 0.45 : 1.15 + Math.random() * 0.45;
       this.launchOverNet(side, spot.x, Math.abs(spot.z), flight, loft, spot.z);
     }
 
@@ -1690,26 +2297,45 @@ export class VolleyballGame implements MiniGameInstance {
   }
 
   private tickBall(deltaSec: number): void {
+    const prevY = this.ball.y;
     this.ball.prevZ = this.ball.z;
     this.ball.vy -= GRAVITY * deltaSec;
     this.ball.x += this.ball.vx * deltaSec;
     this.ball.y += this.ball.vy * deltaSec;
     this.ball.z += this.ball.vz * deltaSec;
 
-    // 撞到網面（上下緣之間）才彈；高於網上／低於網底透空區可過
+    // 撞到網面（上下緣之間）才擋；高於網上／低於網底透空區可過
+    // 殺球一幀可能跨過 z=0：要用「過網當下」的 y，不能用幀尾 y（否則平殺會被誤卡）
     const crossedNet = (this.ball.prevZ < 0 && this.ball.z >= 0)
       || (this.ball.prevZ > 0 && this.ball.z <= 0);
-    if (
-      crossedNet
-      && this.ball.y < NET_TOP_Y
-      && this.ball.y + VB_BALL_RADIUS > NET_BOTTOM_Y
-      && Math.abs(this.ball.x) <= COURT_HALF_WIDTH + 0.4
-    ) {
-      const fromSign = Math.sign(this.ball.prevZ) || 1;
-      this.ball.z = fromSign * (NET_THICKNESS + 0.14);
-      this.ball.vz = fromSign * Math.abs(this.ball.vz) * 0.5;
-      this.ball.vy = Math.max(this.ball.vy + 2.8, 4.2);
-      this.ball.vx *= 0.72;
+    if (crossedNet && Math.abs(this.ball.x) <= COURT_HALF_WIDTH + 0.4) {
+      const dz = this.ball.z - this.ball.prevZ;
+      const tCross = Math.abs(dz) > 1e-6
+        ? clamp((0 - this.ball.prevZ) / dz, 0, 1)
+        : 1;
+      const yAtCross = prevY + (this.ball.y - prevY) * tCross;
+      const hitsNetBand = yAtCross < NET_TOP_Y
+        && yAtCross + VB_BALL_RADIUS > NET_BOTTOM_Y;
+
+      if (hitsNetBand) {
+        const lastToucherBefore = this.lastToucherId;
+        const fromSign = Math.sign(this.ball.prevZ) || 1;
+        // 卡在來球側網前落下，禁止高彈反彈（那會長得像「有人隔空回擊」）
+        this.ball.z = fromSign * (NET_THICKNESS + 0.2);
+        this.ball.vz = fromSign * Math.min(Math.abs(this.ball.vz) * 0.12, 0.8);
+        this.ball.vy = Math.min(Math.max(this.ball.vy, 0) * 0.25, 1.1);
+        this.ball.vx *= 0.35;
+        this.touchedNetSinceLastHit = true;
+        this.pushHitTrace({
+          kind: 'netBounce',
+          actorId: null,
+          distXZ: null,
+          ball: { x: this.ball.x, y: this.ball.y, z: this.ball.z },
+          lastToucherBefore,
+          lastToucherAfter: this.lastToucherId,
+          detail: 'net-catch',
+        });
+      }
     }
 
     if (this.ball.y > VB_BALL_RADIUS) {
@@ -1732,11 +2358,48 @@ export class VolleyballGame implements MiniGameInstance {
 
     const scorer: VolleyballTeamId = this.ball.z >= 0 ? 'a' : 'b';
     const isSpikeKill = this.lastHit?.kind === 'spike';
+    // 落地半場那隊漏接（在 endPoint 清球前先算好）
+    const missPlayerId = this.resolveMissPlayerId(
+      this.ball.z >= 0 ? 'b' : 'a',
+      this.ball.x,
+      this.ball.z,
+    );
     this.endPoint(scorer, {
       kind: isSpikeKill ? 'spike-kill' : 'land',
       impactX: this.ball.x,
       impactZ: this.ball.z,
+      missPlayerId,
     });
+  }
+
+  /** 落地半場：球權 owner 優先，否則離落點最近的那位 */
+  private resolveMissPlayerId(
+    landingTeam: VolleyballTeamId,
+    impactX: number,
+    impactZ: number,
+  ): string | null {
+    const assignment = this.resolveBallAssignment();
+    const owner = assignment.ownerId
+      ? this.players.find((player) => player.id === assignment.ownerId)
+      : undefined;
+
+    if (owner && owner.teamId === landingTeam) {
+      return owner.id;
+    }
+
+    const onSide = this.players.filter((player) => player.teamId === landingTeam);
+
+    if (onSide.length === 0) {
+      return null;
+    }
+
+    onSide.sort((left, right) => {
+      const leftDist = Math.hypot(left.x - impactX, left.z - impactZ);
+      const rightDist = Math.hypot(right.x - impactX, right.z - impactZ);
+      return leftDist - rightDist;
+    });
+
+    return onSide[0]?.id ?? null;
   }
 
   private endPoint(
@@ -1745,6 +2408,7 @@ export class VolleyballGame implements MiniGameInstance {
       kind: 'out' | 'land' | 'spike-kill';
       impactX?: number;
       impactZ?: number;
+      missPlayerId?: string | null;
     },
   ): void {
     if (this.phase === 'pointPause' || this.phase === 'crownAward' || this.phase === 'finished') {
@@ -1767,8 +2431,26 @@ export class VolleyballGame implements MiniGameInstance {
     this.pointPauseMs = 0;
     this.scoreFxSerial += 1;
     this.scoringTeam = scoringTeam;
+    this.outPlayerId = null;
+    this.missPlayerId = null;
     this.opponentMissPlanKey = null;
     this.opponentMissOwnerId = null;
+
+    if (
+      (detail.kind === 'land' || detail.kind === 'spike-kill')
+      && detail.missPlayerId
+    ) {
+      this.missPlayerId = detail.missPlayerId;
+      this.missFxSerial += 1;
+    }
+
+    // 出界文案要先定 scoreFxKind，attribution 才分得出 out / net-out
+    if (detail.kind === 'out') {
+      this.outPlayerId = this.lastHit?.playerId ?? this.lastToucherId;
+      this.scoreFxKind = this.touchedNetSinceLastHit ? 'net-out' : 'out';
+    }
+
+    this.recordPointAttribution(scoringTeam, detail.kind);
 
     if (detail.kind === 'spike-kill' && detail.impactX !== undefined && detail.impactZ !== undefined) {
       // 殺球落地：球留在爆點，炸飛對面，加長暫停看特效
@@ -1784,6 +2466,28 @@ export class VolleyballGame implements MiniGameInstance {
       return;
     }
 
+    if (detail.kind === 'out') {
+      const lastToucherBefore = this.lastToucherId;
+      this.ball.x = 0;
+      this.ball.y = 2.2;
+      this.ball.z = 0;
+      this.ball.prevZ = 0;
+      this.spikeBurst = null;
+      // 出界提示偏長，暫停跟動畫對齊
+      this.pointPauseDurationMs = 1600;
+      this.pushHitTrace({
+        kind: 'out',
+        actorId: this.outPlayerId,
+        distXZ: null,
+        ball: { x: this.ball.x, y: this.ball.y, z: this.ball.z },
+        lastToucherBefore,
+        lastToucherAfter: this.lastToucherId,
+        detail: this.scoreFxKind ?? 'out',
+      });
+      this.touchedNetSinceLastHit = false;
+      return;
+    }
+
     // 一般得分：球抬到場中央
     this.ball.x = 0;
     this.ball.y = 2.2;
@@ -1792,6 +2496,47 @@ export class VolleyballGame implements MiniGameInstance {
     this.spikeBurst = null;
     this.pointPauseDurationMs = POINT_PAUSE_MS;
     this.scoreFxKind = 'normal';
+  }
+
+  /** 足球式：把這分記到最後有效觸球者（殺球／落地球）；出界記錯誤方 */
+  private recordPointAttribution(
+    scoringTeam: VolleyballTeamId,
+    kind: 'out' | 'land' | 'spike-kill',
+  ): void {
+    const last = this.lastHit
+      ? this.players.find((player) => player.id === this.lastHit?.playerId)
+      : this.lastToucherId
+        ? this.players.find((player) => player.id === this.lastToucherId)
+        : undefined;
+
+    if (kind === 'out') {
+      const outKind: VolleyballEventKind = this.scoreFxKind === 'net-out' ? 'net-out' : 'out';
+      this.pushMatchEvent(outKind, last?.id ?? null, last?.teamId ?? null);
+      return;
+    }
+
+    if (kind === 'spike-kill' && last && last.teamId === scoringTeam) {
+      const record = this.ensureRecord(last.id);
+      record.goals += 1;
+      record.spikeGoals += 1;
+      this.pushMatchEvent('spike-kill', last.id, last.teamId);
+      return;
+    }
+
+    if (kind === 'land' && last && last.teamId === scoringTeam) {
+      const record = this.ensureRecord(last.id);
+      record.goals += 1;
+      record.groundGoals += 1;
+      this.pushMatchEvent('ground-goal', last.id, last.teamId);
+      return;
+    }
+
+    // 對手失誤落地／無明確最後觸球：只記事件
+    this.pushMatchEvent(
+      kind === 'spike-kill' ? 'spike-kill' : 'ground-goal',
+      last?.id ?? null,
+      scoringTeam,
+    );
   }
 
   private beginCrownAward(): void {

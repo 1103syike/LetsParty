@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 
+import DevCoverCapturePage from '@/pages/dev-cover-capture-page.vue';
 import HomePage from '@/pages/home-page.vue';
 import JoinPage from '@/pages/join-page.vue';
 import RoomPage from '@/pages/room-page.vue';
@@ -21,6 +22,11 @@ export const router = createRouter({
       path: '/room/:id',
       name: 'room',
       component: RoomPage,
+    },
+    {
+      path: '/dev/cover-capture/:gameId/:slideIndex?',
+      name: 'dev-cover-capture',
+      component: DevCoverCapturePage,
     },
   ],
 });

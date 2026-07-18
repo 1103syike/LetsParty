@@ -28,4 +28,8 @@ export const partyCopy = {
   crownBoardTitle: '皇冠榜',
   crownChartTitle: '皇冠走勢',
   chartRoundLabel: 'R{round}',
+  loadingLabel: '關卡載入中',
+  loadingReady: '準備就緒！',
+  loadingStartGame: '開始遊戲',
+  loadingTipLabel: '玩法小教室',
 } as const;
