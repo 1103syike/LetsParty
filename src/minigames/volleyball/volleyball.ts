@@ -1189,8 +1189,8 @@ export class VolleyballGame implements MiniGameInstance {
         return;
       }
 
-      // 人都到位了，八成救起來
-      if (Math.random() < 0.2) {
+      // 人都到位了幾乎都救；只留一點失手感
+      if (Math.random() < 0.05) {
         return;
       }
     }
@@ -1333,14 +1333,14 @@ export class VolleyballGame implements MiniGameInstance {
       return;
     }
 
-    // 預設幾乎不鎖死；真正來不及才偶發漏
+    // 一般球不鎖死；只剩「落地前極短＋人還很遠」才偶發漏
     const distToLand = land
       ? Math.hypot(owner.x - land.x, owner.z - land.z)
       : 0;
     const isLateAndFar = landTimeSec != null
-      && landTimeSec < 0.28
-      && distToLand > 2.4;
-    const missRate = isLateAndFar ? 0.35 : 0.04;
+      && landTimeSec < 0.22
+      && distToLand > 2.9;
+    const missRate = isLateAndFar ? 0.12 : 0;
 
     this.opponentMissOwnerId = Math.random() < missRate ? owner.id : null;
   }
