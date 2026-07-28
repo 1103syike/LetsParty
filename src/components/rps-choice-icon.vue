@@ -4,7 +4,7 @@ import type { RpsChoice } from '@/types/player-input';
 withDefaults(
   defineProps<{
     choice: RpsChoice | null;
-    size?: 'sm' | 'md' | 'lg';
+    size?: 'sm' | 'md' | 'lg' | 'xl';
     bounce?: boolean;
   }>(),
   {
@@ -174,6 +174,11 @@ withDefaults(
   &--lg {
     width: 3.25rem;
     height: 3.25rem;
+  }
+
+  &--xl {
+    width: 4.25rem;
+    height: 4.25rem;
   }
 
   &--bounce {

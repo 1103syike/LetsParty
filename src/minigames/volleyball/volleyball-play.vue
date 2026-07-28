@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
+import { partyAudio } from '@/common/audio/party-audio';
 import AnimalModelPreview from '@/components/animal-model-preview.vue';
 import CuteCrownIcon from '@/components/cute-crown-icon.vue';
+import VolleyballEventIcon from '@/components/volleyball-event-icon.vue';
 import { partyCopy } from '@/locales/zh-TW/party';
 import { volleyballCopy } from '@/minigames/volleyball/locales/zh-TW';
-import type { VolleyballSnapshot } from '@/minigames/volleyball/volleyball';
+import type {
+  VolleyballPlayerRecord,
+  VolleyballSnapshot,
+} from '@/minigames/volleyball/volleyball';
 import VolleyballScene from '@/minigames/volleyball/volleyball-scene.vue';
 import { sortParticipantsByCrown } from '@/party/scoring/crown';
 import { usePartyStore } from '@/stores/party-store';
@@ -40,18 +45,19 @@ let pendingAimX: number | null = null;
 let pendingAimZ: number | null = null;
 let hoverAimX: number | null = null;
 let hoverAimZ: number | null = null;
-let lastOpponentClickAt = 0;
-let pendingBumpTimer = 0;
 let pumpRafId = 0;
 let scoreFxHideTimer = 0;
 let teammateSetHideTimer = 0;
 
-const DOUBLE_CLICK_MS = 280;
-
 /** 得分特效：依 scoreFxSerial 觸發一次 */
 const scoreFxVisible = ref(false);
-const scoreFxKind = ref<'normal' | 'spike-kill'>('normal');
+const scoreFxKind = ref<'normal' | 'spike-kill' | 'out' | 'net-out'>('normal');
+
+const isOutScoreFx = computed(() => (
+  scoreFxKind.value === 'out' || scoreFxKind.value === 'net-out'
+));
 const scoreFxTeam = ref<'a' | 'b'>('a');
+const scoreFxOutName = ref('');
 /** 觸發當下鎖住比分，動畫期間不被下一分蓋掉 */
 const scoreFxBoardA = ref(0);
 const scoreFxBoardB = ref(0);
@@ -60,6 +66,13 @@ let lastScoreFxSerial = 0;
 /** 隊友舉球提示 */
 const teammateSetVisible = ref(false);
 let lastTeammateSetHitSerial = 0;
+
+/** 殺球出手／神接派對字 */
+const partyShoutVisible = ref(false);
+const partyShoutKind = ref<'spike' | 'nice'>('spike');
+let lastSpikeShoutSerial = 0;
+let lastNiceShoutSerial = 0;
+let partyShoutHideTimer = 0;
 
 const STEER_CODES = new Set([
   'KeyW',
@@ -80,29 +93,62 @@ const roundLabel = computed(() =>
   partyCopy.roundLabel.replace('{round}', String(props.roundIndex)),
 );
 
-const hudPlayers = computed(() => {
+const leaderId = computed(() => {
   const ranked = sortParticipantsByCrown(partyStore.participants);
-  const leaderId =
-    ranked[0] && ranked[0].crownCount > 0
-      ? ranked[0].id
-      : null;
-  const teamById = new Map<string, 'a' | 'b'>();
-
-  for (const id of props.snapshot.teamAIds) {
-    teamById.set(id, 'a');
-  }
-
-  for (const id of props.snapshot.teamBIds) {
-    teamById.set(id, 'b');
-  }
-
-  return partyStore.participants.map((participant, index) => ({
-    participant,
-    slot: index + 1,
-    isLeader: participant.id === leaderId,
-    teamId: teamById.get(participant.id) ?? 'a',
-  }));
+  return ranked[0] && ranked[0].crownCount > 0 ? ranked[0].id : null;
 });
+
+const recordsById = computed(() => {
+  const map = new Map<string, VolleyballPlayerRecord>();
+
+  for (const record of props.snapshot.playerRecords) {
+    map.set(record.playerId, record);
+  }
+
+  return map;
+});
+
+function buildTeamRows(teamId: 'a' | 'b', ids: string[]) {
+  const emptyRecord = (playerId: string): VolleyballPlayerRecord => ({
+    playerId,
+    serves: 0,
+    bumps: 0,
+    sets: 0,
+    spikes: 0,
+    goals: 0,
+    spikeGoals: 0,
+    groundGoals: 0,
+  });
+
+  return ids.flatMap((id, index) => {
+    const participant = partyStore.participants.find((entry) => entry.id === id);
+
+    if (!participant) {
+      return [];
+    }
+
+    return [{
+      participant,
+      slot: index + 1,
+      isLeader: id === leaderId.value,
+      teamId,
+      record: recordsById.value.get(id) ?? emptyRecord(id),
+    }];
+  });
+}
+
+const teamARows = computed(() => buildTeamRows('a', props.snapshot.teamAIds));
+const teamBRows = computed(() => buildTeamRows('b', props.snapshot.teamBIds));
+
+function playerDisplayName(playerId: string | null): string {
+  if (!playerId) {
+    return '';
+  }
+
+  return partyStore.participants.find((participant) => participant.id === playerId)
+    ?.displayName
+    ?? playerId;
+}
 
 const crownCeremonyMessage = computed((): string => {
   const names = props.snapshot.crownWinnerIds
@@ -159,13 +205,49 @@ const ballOwnerCue = computed((): string => (
     : volleyballCopy.ballOwnerTheirsCue
 ));
 
+const partyShoutTitle = computed((): string => (
+  partyShoutKind.value === 'spike'
+    ? volleyballCopy.spikeSwingCallout
+    : volleyballCopy.niceReceiveCallout
+));
+
+const partyShoutCue = computed((): string => (
+  partyShoutKind.value === 'spike'
+    ? volleyballCopy.spikeSwingCue
+    : volleyballCopy.niceReceiveCue
+));
+
+const matchPointLabel = computed((): string | null => {
+  if (!props.snapshot.matchPointTeam) {
+    return null;
+  }
+
+  return props.snapshot.matchPointTeam === 'a'
+    ? volleyballCopy.matchPointRed
+    : volleyballCopy.matchPointBlue;
+});
+
 const statusLabel = computed(() => {
   if (props.snapshot.phase === 'serve') {
     return volleyballCopy.serveHint;
   }
 
   const scoringTeam = props.snapshot.scoringTeam;
-  const isSpike = props.snapshot.scoreFxKind === 'spike-kill';
+  const fxKind = props.snapshot.scoreFxKind;
+
+  if (fxKind === 'out' || fxKind === 'net-out') {
+    if (scoringTeam === 'a') {
+      return volleyballCopy.redOutScored;
+    }
+
+    if (scoringTeam === 'b') {
+      return volleyballCopy.blueOutScored;
+    }
+
+    return volleyballCopy.outScored;
+  }
+
+  const isSpike = fxKind === 'spike-kill';
 
   if (scoringTeam === 'a') {
     return isSpike ? volleyballCopy.redSpikeScored : volleyballCopy.redScored;
@@ -179,6 +261,13 @@ const statusLabel = computed(() => {
 });
 
 const statusTeamClass = computed(() => {
+  if (
+    props.snapshot.scoreFxKind === 'out'
+    || props.snapshot.scoreFxKind === 'net-out'
+  ) {
+    return 'volleyball-play__status--out';
+  }
+
   if (props.snapshot.scoringTeam === 'a') {
     return 'volleyball-play__status--red';
   }
@@ -191,6 +280,14 @@ const statusTeamClass = computed(() => {
 });
 
 const scoreFxLabel = computed(() => {
+  if (scoreFxKind.value === 'net-out') {
+    return volleyballCopy.scoreFxNetOutStamp;
+  }
+
+  if (scoreFxKind.value === 'out') {
+    return volleyballCopy.scoreFxOutStamp;
+  }
+
   if (scoreFxTeam.value === 'a') {
     return scoreFxKind.value === 'spike-kill'
       ? volleyballCopy.scoreFxRedSpike
@@ -202,11 +299,32 @@ const scoreFxLabel = computed(() => {
     : volleyballCopy.scoreFxBlue;
 });
 
-const scoreFxCue = computed(() => (
-  scoreFxKind.value === 'spike-kill'
+/** 出界副標：誰打出去／撞網 */
+const scoreFxOutDetail = computed(() => {
+  if (!scoreFxOutName.value) {
+    return '';
+  }
+
+  if (scoreFxKind.value === 'net-out') {
+    return volleyballCopy.scoreFxNetOutNamed.replace('{name}', scoreFxOutName.value);
+  }
+
+  return volleyballCopy.scoreFxOutNamed.replace('{name}', scoreFxOutName.value);
+});
+
+const scoreFxCue = computed(() => {
+  if (scoreFxKind.value === 'net-out') {
+    return volleyballCopy.scoreFxNetOutCue;
+  }
+
+  if (scoreFxKind.value === 'out') {
+    return volleyballCopy.scoreFxOutCue;
+  }
+
+  return scoreFxKind.value === 'spike-kill'
     ? volleyballCopy.scoreFxSpikeCue
-    : volleyballCopy.scoreFxCue
-));
+    : volleyballCopy.scoreFxCue;
+});
 
 watch(
   () => props.snapshot.scoreFxSerial,
@@ -225,21 +343,53 @@ watch(
     scoreFxTeam.value = props.snapshot.scoringTeam;
     scoreFxBoardA.value = props.snapshot.scoreA;
     scoreFxBoardB.value = props.snapshot.scoreB;
+    scoreFxOutName.value = props.snapshot.outPlayerId
+      ? playerDisplayName(props.snapshot.outPlayerId)
+      : '';
     scoreFxVisible.value = true;
+
+    if (
+      props.snapshot.scoreFxKind === 'out'
+      || props.snapshot.scoreFxKind === 'net-out'
+    ) {
+      partyAudio.playSfx('out');
+    }
+
     window.clearTimeout(scoreFxHideTimer);
-    scoreFxHideTimer = window.setTimeout(
-      () => {
-        scoreFxVisible.value = false;
-      },
-      props.snapshot.scoreFxKind === 'spike-kill' ? 1600 : 1200,
-    );
+    const hideMs = props.snapshot.scoreFxKind === 'spike-kill'
+      || props.snapshot.scoreFxKind === 'out'
+      || props.snapshot.scoreFxKind === 'net-out'
+      ? 1600
+      : 1200;
+    scoreFxHideTimer = window.setTimeout(() => {
+      scoreFxVisible.value = false;
+    }, hideMs);
   },
 );
 
+function showPartyShout(kind: 'spike' | 'nice', hideMs: number): void {
+  partyShoutKind.value = kind;
+  partyShoutVisible.value = true;
+  window.clearTimeout(partyShoutHideTimer);
+  partyShoutHideTimer = window.setTimeout(() => {
+    partyShoutVisible.value = false;
+  }, hideMs);
+}
+
 watch(
   () => props.snapshot.hitSerial,
-  (serial) => {
+  (serial, prevSerial) => {
     const hit = props.snapshot.lastHit;
+
+    if (serial && serial !== prevSerial && hit) {
+      partyAudio.playSfx(hit.kind === 'spike' ? 'hitBallAlt' : 'hitBall');
+
+      if (hit.kind === 'spike' && serial !== lastSpikeShoutSerial) {
+        lastSpikeShoutSerial = serial;
+        showPartyShout('spike', 1100);
+      }
+    }
+
     const localId = props.snapshot.localPlayerId;
     const localTeamId = props.snapshot.localTeamId;
 
@@ -270,16 +420,24 @@ watch(
   },
 );
 
+watch(
+  () => props.snapshot.niceReceiveSerial,
+  (serial) => {
+    if (!serial || serial === lastNiceShoutSerial) {
+      return;
+    }
+
+    lastNiceShoutSerial = serial;
+    showPartyShout('nice', 1200);
+  },
+);
+
 function playerSlotLabel(slot: number): string {
   return volleyballCopy.playerSlotLabel.replace('{slot}', String(slot));
 }
 
 function hudCardClass(color: Participant['color']): string {
   return `vb-hud__card--${color}`;
-}
-
-function teamTag(teamId: 'a' | 'b'): string {
-  return teamId === 'a' ? volleyballCopy.teamA : volleyballCopy.teamB;
 }
 
 function readSteer(): { x: number; y: number } {
@@ -399,7 +557,7 @@ function onCourtAim(point: { x: number; z: number }): void {
   hoverAimZ = point.z;
 }
 
-function onCourtClick(point: { x: number; z: number }): void {
+function onCourtClick(point: { x: number; z: number; button: number }): void {
   if (
     props.snapshot.phase === 'crownAward'
     || props.snapshot.phase === 'finished'
@@ -411,20 +569,12 @@ function onCourtClick(point: { x: number; z: number }): void {
   hoverAimX = point.x;
   hoverAimZ = point.z;
 
-  // 己方半場：左鍵舉球到落點（給隊友）
-  if (isOwnCourtSide(point.z)) {
-    window.clearTimeout(pendingBumpTimer);
-    lastOpponentClickAt = 0;
-    queueAimedHit({ set: true, aimX: point.x, aimZ: point.z });
-    return;
-  }
+  // 右鍵：對方場殺球（含起跳）
+  if (point.button === 2) {
+    if (isOwnCourtSide(point.z)) {
+      return;
+    }
 
-  // 對方半場：一下擊球、連點兩下殺球
-  const now = performance.now();
-
-  if (now - lastOpponentClickAt <= DOUBLE_CLICK_MS) {
-    window.clearTimeout(pendingBumpTimer);
-    lastOpponentClickAt = 0;
     queueAimedHit({
       spike: true,
       jump: true,
@@ -434,14 +584,21 @@ function onCourtClick(point: { x: number; z: number }): void {
     return;
   }
 
-  lastOpponentClickAt = now;
-  window.clearTimeout(pendingBumpTimer);
-  const clickX = point.x;
-  const clickZ = point.z;
-  pendingBumpTimer = window.setTimeout(() => {
-    queueAimedHit({ bump: true, aimX: clickX, aimZ: clickZ });
-    lastOpponentClickAt = 0;
-  }, DOUBLE_CLICK_MS);
+  // 左鍵：己方舉球／對方擊球（立刻出手，不再等雙擊）
+  if (point.button !== 0) {
+    return;
+  }
+
+  if (isOwnCourtSide(point.z)) {
+    queueAimedHit({ set: true, aimX: point.x, aimZ: point.z });
+    return;
+  }
+
+  queueAimedHit({ bump: true, aimX: point.x, aimZ: point.z });
+}
+
+function onContextMenu(event: Event): void {
+  event.preventDefault();
 }
 
 function onKeyDown(event: KeyboardEvent): void {
@@ -496,7 +653,7 @@ onBeforeUnmount(() => {
   });
   window.clearTimeout(scoreFxHideTimer);
   window.clearTimeout(teammateSetHideTimer);
-  window.clearTimeout(pendingBumpTimer);
+  window.clearTimeout(partyShoutHideTimer);
 });
 </script>
 
@@ -505,6 +662,7 @@ onBeforeUnmount(() => {
     <section
       class="volleyball-play"
       :class="{ 'volleyball-play--crown-ceremony': showCrownCeremony }"
+      @contextmenu="onContextMenu"
     >
       <VolleyballScene
         :snapshot="snapshot"
@@ -512,26 +670,52 @@ onBeforeUnmount(() => {
         @court-click="onCourtClick"
       />
 
-      <aside
+      <!-- 置中比分 -->
+      <div
         v-if="!showCrownCeremony"
-        class="vb-hud"
+        class="vb-scoreboard game-chrome"
         :aria-label="volleyballCopy.scoreboardTitle"
       >
+        <div class="vb-scoreboard__round font-game">{{ roundLabel }}</div>
         <div
-          class="vb-hud__score font-game"
+          class="vb-scoreboard__score font-game"
+          :class="{
+            'vb-scoreboard__score--match-point': Boolean(snapshot.matchPointTeam),
+            'vb-scoreboard__score--match-point-red': snapshot.matchPointTeam === 'a',
+            'vb-scoreboard__score--match-point-blue': snapshot.matchPointTeam === 'b',
+          }"
           aria-live="polite"
         >
-          <span class="vb-hud__score-side vb-hud__score-side--red">{{ volleyballCopy.teamA }}</span>
-          <span class="vb-hud__score-num">{{ snapshot.scoreA }}</span>
-          <span class="vb-hud__score-colon">:</span>
-          <span class="vb-hud__score-num">{{ snapshot.scoreB }}</span>
-          <span class="vb-hud__score-side vb-hud__score-side--blue">{{ volleyballCopy.teamB }}</span>
+          <span class="vb-scoreboard__side vb-scoreboard__side--red">{{ volleyballCopy.teamA }}</span>
+          <span class="vb-scoreboard__num">{{ snapshot.scoreA }}</span>
+          <span class="vb-scoreboard__colon">:</span>
+          <span class="vb-scoreboard__num">{{ snapshot.scoreB }}</span>
+          <span class="vb-scoreboard__side vb-scoreboard__side--blue">{{ volleyballCopy.teamB }}</span>
         </div>
-        <div class="vb-hud__round font-game">{{ roundLabel }}</div>
+        <p
+          v-if="matchPointLabel"
+          class="vb-scoreboard__match-point font-game"
+          :class="snapshot.matchPointTeam === 'a'
+            ? 'vb-scoreboard__match-point--red'
+            : 'vb-scoreboard__match-point--blue'"
+          aria-live="polite"
+        >
+          <span class="vb-scoreboard__match-point-title">{{ volleyballCopy.matchPointCallout }}</span>
+          <span class="vb-scoreboard__match-point-cue">{{ volleyballCopy.matchPointCue }}</span>
+          <span class="vb-scoreboard__match-point-side">{{ matchPointLabel }}</span>
+        </p>
+      </div>
 
-        <ul class="vb-hud__list">
+      <!-- 紅方左欄 -->
+      <aside
+        v-if="!showCrownCeremony"
+        class="vb-roster vb-roster--red game-chrome"
+        :aria-label="volleyballCopy.teamA"
+      >
+        <p class="vb-roster__title font-game">{{ volleyballCopy.teamA }}</p>
+        <ul class="vb-roster__list">
           <li
-            v-for="row in hudPlayers"
+            v-for="row in teamARows"
             :key="row.participant.id"
             class="vb-hud__card"
             :class="[
@@ -540,8 +724,6 @@ onBeforeUnmount(() => {
                 'vb-hud__card--leader': row.isLeader,
                 'vb-hud__card--local': row.participant.id === localParticipantId,
                 'vb-hud__card--ball-owner': row.participant.id === snapshot.ballOwnerId,
-                'vb-hud__card--team-a': row.teamId === 'a',
-                'vb-hud__card--team-b': row.teamId === 'b',
               },
             ]"
           >
@@ -555,7 +737,6 @@ onBeforeUnmount(() => {
               </div>
               <span class="vb-hud__slot font-game">{{ playerSlotLabel(row.slot) }}</span>
             </div>
-
             <div class="vb-hud__body">
               <span class="vb-hud__name">
                 {{ row.participant.displayName }}
@@ -564,9 +745,104 @@ onBeforeUnmount(() => {
                   class="vb-hud__you"
                 >{{ volleyballCopy.localPlayerTag }}</span>
               </span>
-              <span class="vb-hud__team">{{ teamTag(row.teamId) }}</span>
+              <div class="vb-hud__stats font-game">
+                <span class="vb-hud__stat" :title="volleyballCopy.goalsLabel">
+                  <VolleyballEventIcon
+                    kind="goal"
+                    size="sm"
+                  />
+                  {{ row.record.goals }}
+                </span>
+                <span class="vb-hud__stat">
+                  <VolleyballEventIcon
+                    kind="spike"
+                    size="sm"
+                  />
+                  {{ row.record.spikes }}
+                </span>
+                <span class="vb-hud__stat">
+                  <VolleyballEventIcon
+                    kind="bump"
+                    size="sm"
+                  />
+                  {{ row.record.bumps }}
+                </span>
+              </div>
             </div>
+            <div class="vb-hud__crowns">
+              <CuteCrownIcon
+                size="md"
+                :bounce="row.isLeader"
+              />
+              <span class="vb-hud__crown-count font-game">{{ row.participant.crownCount }}</span>
+            </div>
+          </li>
+        </ul>
+      </aside>
 
+      <!-- 藍方右欄 -->
+      <aside
+        v-if="!showCrownCeremony"
+        class="vb-roster vb-roster--blue game-chrome"
+        :aria-label="volleyballCopy.teamB"
+      >
+        <p class="vb-roster__title font-game">{{ volleyballCopy.teamB }}</p>
+        <ul class="vb-roster__list">
+          <li
+            v-for="row in teamBRows"
+            :key="row.participant.id"
+            class="vb-hud__card"
+            :class="[
+              hudCardClass(row.participant.color),
+              {
+                'vb-hud__card--leader': row.isLeader,
+                'vb-hud__card--local': row.participant.id === localParticipantId,
+                'vb-hud__card--ball-owner': row.participant.id === snapshot.ballOwnerId,
+              },
+            ]"
+          >
+            <div class="vb-hud__portrait-wrap">
+              <div class="vb-hud__portrait">
+                <AnimalModelPreview
+                  compact
+                  :animal-id="row.participant.animalId"
+                  :player-color="row.participant.color"
+                />
+              </div>
+              <span class="vb-hud__slot font-game">{{ playerSlotLabel(row.slot) }}</span>
+            </div>
+            <div class="vb-hud__body">
+              <span class="vb-hud__name">
+                {{ row.participant.displayName }}
+                <span
+                  v-if="row.participant.id === localParticipantId"
+                  class="vb-hud__you"
+                >{{ volleyballCopy.localPlayerTag }}</span>
+              </span>
+              <div class="vb-hud__stats font-game">
+                <span class="vb-hud__stat" :title="volleyballCopy.goalsLabel">
+                  <VolleyballEventIcon
+                    kind="goal"
+                    size="sm"
+                  />
+                  {{ row.record.goals }}
+                </span>
+                <span class="vb-hud__stat">
+                  <VolleyballEventIcon
+                    kind="spike"
+                    size="sm"
+                  />
+                  {{ row.record.spikes }}
+                </span>
+                <span class="vb-hud__stat">
+                  <VolleyballEventIcon
+                    kind="bump"
+                    size="sm"
+                  />
+                  {{ row.record.bumps }}
+                </span>
+              </div>
+            </div>
             <div class="vb-hud__crowns">
               <CuteCrownIcon
                 size="md"
@@ -579,9 +855,9 @@ onBeforeUnmount(() => {
       </aside>
 
       <div
-        v-if="ballOwnerVisible && ballOwnerLabel && !showCrownCeremony"
+        v-if="ballOwnerVisible && ballOwnerLabel && !showCrownCeremony && !partyShoutVisible"
         :key="snapshot.ballOwnerId ?? 'none'"
-        class="volleyball-play__ball-callout font-game"
+        class="volleyball-play__ball-callout font-game game-chrome"
         :class="ballOwnerIsLocal
           ? 'volleyball-play__ball-callout--yours'
           : 'volleyball-play__ball-callout--theirs'"
@@ -601,9 +877,31 @@ onBeforeUnmount(() => {
         >★</span>
       </div>
 
+      <div
+        v-if="partyShoutVisible && !showCrownCeremony"
+        class="volleyball-play__party-shout font-game game-chrome"
+        :class="partyShoutKind === 'spike'
+          ? 'volleyball-play__party-shout--spike'
+          : 'volleyball-play__party-shout--nice'"
+        aria-live="polite"
+      >
+        <span
+          class="volleyball-play__party-shout-star"
+          aria-hidden="true"
+        >★</span>
+        <div class="volleyball-play__party-shout-body">
+          <span class="volleyball-play__party-shout-title">{{ partyShoutTitle }}</span>
+          <span class="volleyball-play__party-shout-cue">{{ partyShoutCue }}</span>
+        </div>
+        <span
+          class="volleyball-play__party-shout-star volleyball-play__party-shout-star--flip"
+          aria-hidden="true"
+        >★</span>
+      </div>
+
       <p
         v-if="!showCrownCeremony"
-        class="volleyball-play__status font-game"
+        class="volleyball-play__status font-game game-chrome"
         :class="statusTeamClass"
       >
         {{ statusLabel }}
@@ -611,35 +909,61 @@ onBeforeUnmount(() => {
 
       <div
         v-if="scoreFxVisible && !showCrownCeremony"
-        class="volleyball-play__score-fx font-game"
+        class="volleyball-play__score-fx font-game game-chrome"
         :class="[
           `volleyball-play__score-fx--${scoreFxKind}`,
-          scoreFxTeam === 'a' ? 'volleyball-play__score-fx--red' : 'volleyball-play__score-fx--blue',
+          isOutScoreFx
+            ? 'volleyball-play__score-fx--out'
+            : scoreFxTeam === 'a'
+              ? 'volleyball-play__score-fx--red'
+              : 'volleyball-play__score-fx--blue',
         ]"
         aria-live="polite"
       >
         <span
           class="volleyball-play__score-fx-star"
           aria-hidden="true"
-        >★</span>
+        >{{ isOutScoreFx ? '✕' : '★' }}</span>
         <div class="volleyball-play__score-fx-body">
-          <p class="volleyball-play__score-fx-board">
-            <span class="volleyball-play__score-fx-num">{{ scoreFxBoardA }}</span>
-            <span class="volleyball-play__score-fx-colon">:</span>
-            <span class="volleyball-play__score-fx-num">{{ scoreFxBoardB }}</span>
-          </p>
-          <span class="volleyball-play__score-fx-label">{{ scoreFxLabel }}</span>
-          <span class="volleyball-play__score-fx-cue">{{ scoreFxCue }}</span>
+          <!-- 出界／撞網：大字當主角，比分退第二線 -->
+          <template v-if="isOutScoreFx">
+            <span class="volleyball-play__score-fx-label volleyball-play__score-fx-label--out-stamp">
+              <VolleyballEventIcon
+                kind="out"
+                size="md"
+              />
+              {{ scoreFxLabel }}
+            </span>
+            <span
+              v-if="scoreFxOutDetail"
+              class="volleyball-play__score-fx-detail"
+            >{{ scoreFxOutDetail }}</span>
+            <p class="volleyball-play__score-fx-board volleyball-play__score-fx-board--out">
+              <span class="volleyball-play__score-fx-num">{{ scoreFxBoardA }}</span>
+              <span class="volleyball-play__score-fx-colon">:</span>
+              <span class="volleyball-play__score-fx-num">{{ scoreFxBoardB }}</span>
+            </p>
+            <span class="volleyball-play__score-fx-cue">{{ scoreFxCue }}</span>
+          </template>
+          <template v-else>
+            <p class="volleyball-play__score-fx-board">
+              <span class="volleyball-play__score-fx-num">{{ scoreFxBoardA }}</span>
+              <span class="volleyball-play__score-fx-colon">:</span>
+              <span class="volleyball-play__score-fx-num">{{ scoreFxBoardB }}</span>
+            </p>
+            <span class="volleyball-play__score-fx-label">{{ scoreFxLabel }}</span>
+            <span class="volleyball-play__score-fx-cue">{{ scoreFxCue }}</span>
+          </template>
         </div>
         <span
           class="volleyball-play__score-fx-star volleyball-play__score-fx-star--flip"
           aria-hidden="true"
-        >★</span>
+        >{{ isOutScoreFx ? '✕' : '★' }}</span>
       </div>
 
       <div
         v-if="teammateSetVisible && !showCrownCeremony"
-        class="volleyball-play__teammate-set font-game"
+        class="volleyball-play__teammate-set font-game game-chrome"
         aria-live="polite"
       >
         {{ volleyballCopy.teammateSetCue }}
@@ -647,7 +971,7 @@ onBeforeUnmount(() => {
 
       <aside
         v-if="!showCrownCeremony"
-        class="volleyball-play__controls"
+        class="volleyball-play__controls game-chrome"
         aria-label="操作提示"
       >
         <p class="volleyball-play__controls-title font-game">
@@ -665,7 +989,7 @@ onBeforeUnmount(() => {
 
       <div
         v-if="showCrownCeremony"
-        class="crown-ceremony"
+        class="crown-ceremony game-chrome"
         aria-live="polite"
       >
         <div
@@ -701,10 +1025,13 @@ onBeforeUnmount(() => {
   }
 }
 
-.volleyball-play :deep(.volleyball-scene) {
+.volleyball-play :deep(.volleyball-scene-root) {
   position: absolute;
   inset: 0;
   z-index: 1;
+}
+
+.volleyball-play :deep(.volleyball-scene) {
   display: block;
   width: 100%;
   height: 100%;
@@ -713,55 +1040,68 @@ onBeforeUnmount(() => {
   touch-action: none;
 }
 
-.vb-hud {
+.vb-scoreboard {
   position: absolute;
-  top: calc(var(--space-md) + env(safe-area-inset-top));
-  right: calc(var(--space-md) + env(safe-area-inset-right));
-  z-index: 3;
+  top: calc(var(--space-sm) + env(safe-area-inset-top));
+  left: 50%;
+  z-index: 4;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  align-items: center;
   gap: var(--space-xs);
-  width: min(13.5rem, 48vw);
+  transform: translateX(-50%);
   pointer-events: none;
 }
 
-.vb-hud__round {
-  align-self: center;
+.vb-scoreboard__round {
   padding: var(--space-xs) var(--space-md);
   border: 3px solid var(--color-on-accent);
   border-radius: var(--radius-full);
   background: var(--color-accent);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-xs);
   color: var(--color-on-accent);
   box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-text-heading) 35%, transparent);
 }
 
-.vb-hud__score {
-  align-self: stretch;
-  justify-content: center;
+.vb-scoreboard__score {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
+  justify-content: center;
+  gap: var(--space-md);
+  min-width: min(24rem, 78vw);
+  padding: var(--space-sm) var(--space-xl);
   border: 4px solid var(--color-on-accent);
   border-radius: var(--radius-lg);
   background: linear-gradient(
-    180deg,
-    var(--color-surface-solid) 0%,
-    color-mix(in srgb, var(--color-warning) 28%, white) 100%
+    90deg,
+    color-mix(in srgb, var(--color-player-1) 38%, white) 0%,
+    var(--color-surface-solid) 45%,
+    color-mix(in srgb, var(--color-player-3) 38%, white) 100%
   );
-  font-size: var(--font-size-2xl);
-  letter-spacing: 0.06em;
-  color: var(--color-text-heading);
-  box-shadow:
-    4px 4px 0 color-mix(in srgb, var(--color-player-1) 45%, transparent),
-    -2px 2px 0 color-mix(in srgb, var(--color-player-3) 35%, transparent);
+  box-shadow: 0 var(--space-sm) 0 color-mix(in srgb, var(--color-text-heading) 28%, transparent);
+  animation: vb-scoreboard-idle 2.4s ease-in-out infinite;
+
+  &--match-point {
+    animation: vb-scoreboard-match-point 0.9s ease-in-out infinite;
+  }
+
+  &--match-point-red {
+    box-shadow:
+      0 var(--space-sm) 0 color-mix(in srgb, var(--color-player-1) 45%, transparent),
+      0 0 0 3px color-mix(in srgb, var(--color-warning) 55%, white);
+  }
+
+  &--match-point-blue {
+    box-shadow:
+      0 var(--space-sm) 0 color-mix(in srgb, var(--color-player-3) 45%, transparent),
+      0 0 0 3px color-mix(in srgb, var(--color-warning) 55%, white);
+  }
 }
 
-.vb-hud__score-side {
-  font-size: var(--font-size-sm);
+.vb-scoreboard__side {
+  font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);
+  letter-spacing: 0.1em;
   -webkit-text-stroke: 1px var(--color-on-accent);
   paint-order: stroke fill;
 
@@ -774,25 +1114,112 @@ onBeforeUnmount(() => {
   }
 }
 
-.vb-hud__score-num {
-  min-width: 1.15em;
+.vb-scoreboard__num {
+  min-width: 1.2em;
+  font-size: var(--font-size-3xl);
+  line-height: 1;
   text-align: center;
-  font-weight: var(--font-weight-bold);
   color: var(--color-text-heading);
+  text-shadow:
+    2px 2px 0 color-mix(in srgb, var(--color-warning) 40%, white),
+    -1px -1px 0 var(--color-on-accent);
+  transform: scale(1.08);
+}
+
+.vb-scoreboard__colon {
+  font-size: var(--font-size-2xl);
+  color: var(--color-text-heading);
+}
+
+.vb-scoreboard__match-point {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: var(--space-xs) var(--space-sm);
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.08em;
+  pointer-events: none;
   -webkit-text-stroke: 1px var(--color-on-accent);
   paint-order: stroke fill;
-  text-shadow: 2px 2px 0 var(--color-bg);
+  text-shadow:
+    2px 2px 0 var(--color-bg),
+    -1px -1px 0 var(--color-on-accent),
+    1px -1px 0 var(--color-on-accent),
+    -1px 1px 0 var(--color-on-accent),
+    1px 1px 0 var(--color-on-accent);
+  animation: vb-match-point-wobble 1s ease-in-out infinite;
+
+  &--red {
+    color: var(--color-player-1);
+  }
+
+  &--blue {
+    color: var(--color-player-3);
+  }
 }
 
-.vb-hud__score-colon {
-  color: var(--color-accent);
-  font-weight: var(--font-weight-bold);
+.vb-scoreboard__match-point-title {
+  font-size: var(--font-size-xl);
 }
 
-.vb-hud__list {
+.vb-scoreboard__match-point-cue {
+  font-size: var(--font-size-md);
+  color: var(--color-warning);
+}
+
+.vb-scoreboard__match-point-side {
+  font-size: var(--font-size-sm);
+}
+
+.vb-roster {
+  position: absolute;
+  top: calc(var(--space-xl) + var(--space-lg) + env(safe-area-inset-top));
+  z-index: 3;
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
+  width: min(14rem, 42vw);
+  pointer-events: none;
+
+  &--red {
+    left: calc(var(--space-md) + env(safe-area-inset-left));
+  }
+
+  &--blue {
+    right: calc(var(--space-md) + env(safe-area-inset-right));
+  }
+}
+
+.vb-roster__title {
+  margin: 0;
+  padding: var(--space-xs) var(--space-sm);
+  border: 3px solid var(--color-on-accent);
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-sm);
+  letter-spacing: 0.08em;
+  text-align: center;
+  color: var(--color-on-accent);
+
+  .vb-roster--red & {
+    background: color-mix(in srgb, var(--color-player-1) 82%, black);
+    box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-player-1) 40%, transparent);
+  }
+
+  .vb-roster--blue & {
+    background: color-mix(in srgb, var(--color-player-3) 82%, black);
+    box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-player-3) 40%, transparent);
+  }
+}
+
+.vb-roster__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -897,6 +1324,21 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.vb-hud__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+}
+
+.vb-hud__stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-heading);
+}
+
 .vb-hud__you {
   margin-left: 2px;
   padding: 0 var(--space-xs);
@@ -906,26 +1348,14 @@ onBeforeUnmount(() => {
   color: var(--color-accent);
 }
 
-.vb-hud__team {
-  display: block;
-  margin-top: 2px;
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text-muted);
-}
-
 .vb-hud__card--ball-owner {
-  outline: 3px solid var(--color-warning);
+  outline: 4px solid var(--color-warning);
   outline-offset: 2px;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-warning) 35%, transparent);
-}
-
-.vb-hud__card--team-a .vb-hud__team {
-  color: var(--color-accent);
-}
-
-.vb-hud__card--team-b .vb-hud__team {
-  color: var(--color-player-3);
+  box-shadow:
+    0 0 0 5px color-mix(in srgb, var(--color-warning) 42%, transparent),
+    3px 3px 0 color-mix(in srgb, var(--hud-tone) 42%, transparent);
+  animation: vb-ball-owner-pulse 0.85s ease-in-out infinite;
+  transform: scale(1.03);
 }
 
 .vb-hud__crowns {
@@ -945,7 +1375,7 @@ onBeforeUnmount(() => {
 /* 派對風呼叫：無底框、粗描邊字、彈跳星星（見 docs/party-ui-callout.md） */
 .volleyball-play__ball-callout {
   position: absolute;
-  top: calc(22% + env(safe-area-inset-top) * 0.25);
+  top: calc(20% + env(safe-area-inset-top) * 0.25);
   left: 50%;
   z-index: 5;
   display: flex;
@@ -1028,6 +1458,143 @@ onBeforeUnmount(() => {
   &--flip {
     animation-delay: 0.2s;
     animation-direction: reverse;
+  }
+}
+
+.volleyball-play__party-shout {
+  position: absolute;
+  top: calc(24% + env(safe-area-inset-top) * 0.2);
+  left: 50%;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: vb-party-shout-pop 0.85s cubic-bezier(0.22, 1.45, 0.36, 1) both;
+
+  &--spike {
+    color: var(--color-accent);
+
+    .volleyball-play__party-shout-star {
+      color: var(--color-warning);
+    }
+  }
+
+  &--nice {
+    color: var(--color-success);
+
+    .volleyball-play__party-shout-star {
+      color: var(--color-warning);
+    }
+  }
+}
+
+.volleyball-play__party-shout-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.volleyball-play__party-shout-title,
+.volleyball-play__party-shout-cue {
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.08em;
+  -webkit-text-stroke: 1px var(--color-on-accent);
+  paint-order: stroke fill;
+  text-shadow:
+    3px 3px 0 var(--color-bg),
+    -2px -2px 0 var(--color-on-accent),
+    2px -2px 0 var(--color-on-accent),
+    -2px 2px 0 var(--color-on-accent),
+    2px 2px 0 var(--color-on-accent);
+}
+
+.volleyball-play__party-shout-title {
+  font-size: var(--font-size-3xl);
+  animation: vb-ball-callout-wobble 0.9s ease-in-out 0.55s infinite;
+}
+
+.volleyball-play__party-shout-cue {
+  font-size: var(--font-size-lg);
+  color: var(--color-warning);
+  animation: vb-ball-callout-cue-bounce 0.75s ease-in-out 0.65s infinite;
+}
+
+.volleyball-play__party-shout-star {
+  font-size: var(--font-size-2xl);
+  animation: vb-ball-callout-star-spin 0.9s ease-in-out infinite;
+
+  &--flip {
+    animation-delay: 0.15s;
+    animation-direction: reverse;
+  }
+}
+
+@keyframes vb-scoreboard-idle {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.015);
+  }
+}
+
+@keyframes vb-scoreboard-match-point {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.04);
+  }
+}
+
+@keyframes vb-match-point-wobble {
+  0%,
+  100% {
+    transform: rotate(-1.5deg);
+  }
+
+  50% {
+    transform: rotate(1.5deg);
+  }
+}
+
+@keyframes vb-ball-owner-pulse {
+  0%,
+  100% {
+    outline-color: var(--color-warning);
+  }
+
+  50% {
+    outline-color: color-mix(in srgb, var(--color-warning) 55%, white);
+  }
+}
+
+@keyframes vb-party-shout-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -18%) scale(0.4) rotate(-10deg);
+  }
+
+  45% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1.18) rotate(3deg);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1) rotate(0deg);
   }
 }
 
@@ -1116,6 +1683,12 @@ onBeforeUnmount(() => {
     background: color-mix(in srgb, var(--color-player-3) 18%, white);
     color: var(--color-player-3);
   }
+
+  &--out {
+    border-color: var(--color-warning);
+    background: color-mix(in srgb, var(--color-warning) 22%, white);
+    color: var(--color-warning);
+  }
 }
 
 /* 隊友舉球：同派對字卡規範（無底框） */
@@ -1193,11 +1766,41 @@ onBeforeUnmount(() => {
     color: var(--color-player-3);
   }
 
+  /* 出界用警告色＋抖動，要比一般得分更搶眼 */
+  &--out {
+    color: var(--color-warning);
+    animation: vb-score-fx-out 1.5s cubic-bezier(0.22, 1.4, 0.36, 1) both;
+
+    .volleyball-play__score-fx-star {
+      font-size: var(--font-size-3xl);
+      animation: vb-score-fx-out-spin 0.55s steps(2) infinite;
+    }
+  }
+
   &--spike-kill {
-    animation: vb-score-fx-spike 1.45s cubic-bezier(0.22, 1.4, 0.36, 1) both;
+    animation: vb-score-fx-spike 1.55s cubic-bezier(0.22, 1.5, 0.36, 1) both;
 
     .volleyball-play__score-fx-board {
-      animation-duration: 1.45s;
+      animation-duration: 1.55s;
+    }
+
+    .volleyball-play__score-fx-num {
+      transform: scale(1.85);
+    }
+
+    .volleyball-play__score-fx-label {
+      font-size: var(--font-size-3xl);
+      letter-spacing: 0.1em;
+    }
+
+    .volleyball-play__score-fx-cue {
+      font-size: var(--font-size-2xl);
+      color: var(--color-warning);
+    }
+
+    .volleyball-play__score-fx-star {
+      font-size: var(--font-size-3xl);
+      color: var(--color-warning);
     }
   }
 }
@@ -1250,11 +1853,47 @@ onBeforeUnmount(() => {
 }
 
 .volleyball-play__score-fx-label {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
   font-size: var(--font-size-2xl);
   letter-spacing: 0.1em;
   line-height: var(--line-height-tight);
   text-align: center;
+
+  &--out-stamp {
+    font-size: var(--font-size-3xl);
+    letter-spacing: 0.18em;
+    animation: vb-score-fx-out-stamp 1.5s cubic-bezier(0.22, 1.55, 0.36, 1) both;
+  }
+}
+
+.volleyball-play__score-fx-detail {
+  display: block;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.08em;
+  line-height: var(--line-height-tight);
+  text-align: center;
+  -webkit-text-stroke: 1px var(--color-on-accent);
+  paint-order: stroke fill;
+  text-shadow:
+    3px 3px 0 var(--color-bg),
+    -2px -2px 0 var(--color-on-accent),
+    2px -2px 0 var(--color-on-accent),
+    -2px 2px 0 var(--color-on-accent),
+    2px 2px 0 var(--color-on-accent);
+}
+
+.volleyball-play__score-fx-board--out {
+  gap: var(--space-xs);
+
+  .volleyball-play__score-fx-num,
+  .volleyball-play__score-fx-colon {
+    font-size: var(--font-size-2xl);
+    transform: scale(1.15);
+  }
 }
 
 .volleyball-play__score-fx-cue {
@@ -1345,10 +1984,75 @@ onBeforeUnmount(() => {
   }
 }
 
+@keyframes vb-score-fx-out {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -42%) scale(0.25) rotate(-18deg);
+  }
+
+  18% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.4) rotate(6deg);
+  }
+
+  32% {
+    transform: translate(calc(-50% - 10px), -50%) scale(1.08) rotate(-4deg);
+  }
+
+  46% {
+    transform: translate(calc(-50% + 10px), -50%) scale(1.12) rotate(4deg);
+  }
+
+  60% {
+    transform: translate(calc(-50% - 6px), -50%) scale(1.04) rotate(-2deg);
+  }
+
+  78% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.08) rotate(0deg);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -64%) scale(1.14) rotate(0deg);
+  }
+}
+
+@keyframes vb-score-fx-out-stamp {
+  0% {
+    transform: scale(0.2) rotate(-12deg);
+    opacity: 0;
+  }
+
+  35% {
+    transform: scale(1.28) rotate(3deg);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+@keyframes vb-score-fx-out-spin {
+  0% {
+    transform: scale(1) rotate(-8deg);
+  }
+
+  50% {
+    transform: scale(1.2) rotate(8deg);
+  }
+
+  100% {
+    transform: scale(1) rotate(-8deg);
+  }
+}
+
 .volleyball-play__controls {
   position: absolute;
   bottom: calc(var(--space-md) + env(safe-area-inset-bottom));
-  left: calc(var(--space-md) + env(safe-area-inset-left));
+  right: calc(var(--space-md) + env(safe-area-inset-right));
   z-index: 3;
   max-width: min(42vw, 11.5rem);
   margin: 0;

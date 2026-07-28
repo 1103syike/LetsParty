@@ -42,6 +42,10 @@ export const ANIMAL_PREVIEW_RADIUS_BY_ID: Partial<Record<AnimalId, number>> = {
   chicken: 2.45,
   pig: 2.4,
   dog: 2.35,
+  wolf: 2.55,
+  horse: 2.5,
+  raccoon: 3.1,
+  cat: 2.45,
 };
 
 export function getAnimalPreviewRadius(animalId: AnimalId): number {
@@ -76,6 +80,10 @@ export const RPS_PANEL_AIM_Y_RATIO_BY_ID: Partial<Record<AnimalId, number>> = {
   pig: 0.46,
   sheep: 0.4,
   chicken: 0.38,
+  wolf: 0.42,
+  horse: 0.48,
+  raccoon: 0.4,
+  cat: 0.4,
 };
 
 export function getRpsPanelAimYRatio(animalId: AnimalId): number {
@@ -88,6 +96,10 @@ export const RPS_PANEL_RADIUS_BY_ID: Partial<Record<AnimalId, number>> = {
   sheep: 6.35,
   pig: 6.25,
   chicken: 6.45,
+  wolf: 6.5,
+  horse: 6.8,
+  raccoon: 7.1,
+  cat: 6.35,
 };
 
 export function getRpsPanelRadius(animalId: AnimalId): number {

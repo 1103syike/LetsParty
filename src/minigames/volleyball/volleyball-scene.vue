@@ -6,6 +6,7 @@ import {
   DirectionalLight,
   DynamicTexture,
   HemisphericLight,
+  Matrix,
   Mesh,
   MeshBuilder,
   type Observer,
@@ -15,12 +16,13 @@ import {
   StandardMaterial,
   Vector3,
 } from '@babylonjs/core';
-import { onBeforeUnmount, watch } from 'vue';
+import { onBeforeUnmount, ref, watch } from 'vue';
 
 import { AnimalActor } from '@/common/animals/animal-actor';
 import { AnimalCrownCeremony } from '@/common/animals/animal-crown-ceremony';
 import { createQuaterniusFlatMaterial } from '@/common/quaternius/quaternius-materials';
 import { useBabylonScene } from '@/composables/use-babylon-scene';
+import { volleyballCopy } from '@/minigames/volleyball/locales/zh-TW';
 import type { VolleyballSnapshot } from '@/minigames/volleyball/volleyball';
 import { addVolleyballCourtDecor } from '@/minigames/volleyball/volleyball-court-decor';
 import { VolleyballHitFx } from '@/minigames/volleyball/volleyball-hit-fx';
@@ -33,7 +35,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   courtAim: [value: { x: number; z: number }];
-  courtClick: [value: { x: number; z: number }];
+  /** button：0 左鍵、2 右鍵 */
+  courtClick: [value: { x: number; z: number; button: number }];
 }>();
 
 const partyStore = usePartyStore();
@@ -62,10 +65,20 @@ let sceneReady = false;
 let lastPhase: VolleyballSnapshot['phase'] | null = null;
 let lastHitSerial = 0;
 let lastSpikeBurstSerial = 0;
+let lastMissFxSerial = 0;
 let ceremonyCameraProgress = 0;
 let ceremonyCameraFromAlpha = 0;
 let ceremonyCameraFromBeta = 0;
 let ceremonyCameraFromRadius = 0;
+
+/** 漏接派對字：貼在角色畫面座標上 */
+const missPopup = ref<{
+  serial: number;
+  x: number;
+  y: number;
+  title: string;
+  cue: string;
+} | null>(null);
 
 function createCourt(scene: Scene): void {
   // 天空略加深，避免整畫面過曝看不清
@@ -87,16 +100,68 @@ function createCourt(scene: Scene): void {
     Color3.FromHexString('#c9964a'),
   );
 
-  // 對齊物理半場 6.0 × 8.4（點選層）
-  const court = MeshBuilder.CreateGround('vb-court', { width: 12.2, height: 17 }, scene);
-  court.position.y = 0.01;
-  court.material = createQuaterniusFlatMaterial(
+  // 對齊物理半場（volleyball.ts COURT_HALF_*）：紅方 z<0、藍方 z>0
+  const courtWidth = 14.2;
+  const halfDepth = 9.7;
+  const courtY = 0.01;
+  /** 點選可到場外一圈，才能瞄出界 */
+  const pickPad = 3.0;
+
+  const courtRed = MeshBuilder.CreateGround(
+    'vb-court-red',
+    { width: courtWidth, height: halfDepth },
     scene,
-    'vb-court',
-    Color3.FromHexString('#2f8a72'),
   );
-  court.isPickable = true;
-  courtPickMesh = court;
+  courtRed.position.set(0, courtY, -halfDepth * 0.5);
+  courtRed.material = createQuaterniusFlatMaterial(
+    scene,
+    'vb-court-red',
+    Color3.FromHexString('#e86b8a').scale(0.72),
+  );
+  courtRed.isPickable = false;
+
+  const courtBlue = MeshBuilder.CreateGround(
+    'vb-court-blue',
+    { width: courtWidth, height: halfDepth },
+    scene,
+  );
+  courtBlue.position.set(0, courtY, halfDepth * 0.5);
+  courtBlue.material = createQuaterniusFlatMaterial(
+    scene,
+    'vb-court-blue',
+    Color3.FromHexString('#6ba8e8').scale(0.72),
+  );
+  courtBlue.isPickable = false;
+
+  // 中線（對齊 --color-on-accent 感）
+  const midLine = MeshBuilder.CreateGround(
+    'vb-court-mid',
+    { width: courtWidth, height: 0.14 },
+    scene,
+  );
+  midLine.position.set(0, courtY + 0.002, 0);
+  midLine.material = createQuaterniusFlatMaterial(
+    scene,
+    'vb-court-mid',
+    Color3.FromHexString('#ffffff'),
+  );
+  midLine.isPickable = false;
+
+  // 透明點選層：比場地大一圈，允許點界外當殺球／擊球落點
+  const courtPick = MeshBuilder.CreateGround(
+    'vb-court-pick',
+    { width: courtWidth + pickPad * 2, height: halfDepth * 2 + pickPad * 2 },
+    scene,
+  );
+  courtPick.position.y = courtY + 0.004;
+  const pickMat = new StandardMaterial('vb-court-pick-mat', scene);
+  pickMat.diffuseColor = Color3.Black();
+  pickMat.alpha = 0.01;
+  pickMat.transparencyMode = StandardMaterial.MATERIAL_ALPHABLEND;
+  courtPick.material = pickMat;
+  courtPick.visibility = 0.01;
+  courtPick.isPickable = true;
+  courtPickMesh = courtPick;
 
   addVolleyballCourtDecor(scene);
 
@@ -351,10 +416,12 @@ function updateAimMarker(point: { x: number; z: number } | null): void {
 
   const teamId = props.snapshot.localTeamId;
   const isOwn = teamId === 'b' ? point.z > 0.12 : point.z < -0.12;
-  // 己方：--color-player-4；對方：--color-player-1（鮮亮亮環）
-  const hex = isOwn ? '#7ecf9a' : '#e86b8a';
+  // 物理場界（對齊 COURT_HALF 7.0 / 9.6）：界外用 warning 提示可能出界
+  const isOut = Math.abs(point.x) > 7.0 || Math.abs(point.z) > 9.6;
+  // 己方：player-4；對方：player-1；界外：warning
+  const hex = isOut ? '#e8b86d' : isOwn ? '#7ecf9a' : '#e86b8a';
   aimMarkerMat.diffuseColor = Color3.FromHexString(hex);
-  aimMarkerMat.emissiveColor = Color3.FromHexString(hex).scale(1.2);
+  aimMarkerMat.emissiveColor = Color3.FromHexString(hex).scale(isOut ? 1.35 : 1.2);
   aimMarkerMat.alpha = 0.92;
   aimMarkerMesh.position.x = point.x;
   aimMarkerMesh.position.z = point.z;
@@ -387,13 +454,16 @@ function bindCourtPointer(scene: Scene): void {
       return;
     }
 
-    // 僅左鍵
-    if (info.event.button !== 0 || !point) {
+    // 左鍵擊球／舉球，右鍵殺球
+    const button = info.event.button;
+
+    if ((button !== 0 && button !== 2) || !point) {
       return;
     }
 
+    info.event.preventDefault();
     updateAimMarker(point);
-    emit('courtClick', point);
+    emit('courtClick', { x: point.x, z: point.z, button });
   });
 }
 
@@ -445,7 +515,7 @@ function playHitAnimation(snapshot: VolleyballSnapshot): void {
 
   if (snapshot.lastHit.kind === 'spike') {
     actor.playAttack();
-    hitAnimUntil.set(snapshot.lastHit.playerId, performance.now() + 480);
+    hitAnimUntil.set(snapshot.lastHit.playerId, performance.now() + 620);
   } else {
     // 擊球／舉球：墊擊姿勢
     actor.playBumpHit();
@@ -534,6 +604,98 @@ function playSpikeBurst(snapshot: VolleyballSnapshot): void {
   spikeFx?.playBurst(snapshot.spikeBurst.x, snapshot.spikeBurst.z);
 }
 
+function syncMissPopup(snapshot: VolleyballSnapshot): void {
+  if (
+    snapshot.phase !== 'pointPause'
+    || !snapshot.missPlayerId
+    || !snapshot.missFxSerial
+  ) {
+    if (missPopup.value) {
+      missPopup.value = null;
+    }
+
+    return;
+  }
+
+  if (snapshot.missFxSerial === lastMissFxSerial && missPopup.value) {
+    return;
+  }
+
+  lastMissFxSerial = snapshot.missFxSerial;
+  const screen = projectPlayerHeadToCanvas(snapshot.missPlayerId);
+
+  if (!screen) {
+    missPopup.value = null;
+    return;
+  }
+
+  missPopup.value = {
+    serial: snapshot.missFxSerial,
+    x: screen.x,
+    y: screen.y,
+    title: volleyballCopy.missCallout,
+    cue: volleyballCopy.missCalloutCue,
+  };
+}
+
+function updateMissPopupScreenPos(scene: Scene): void {
+  const popup = missPopup.value;
+  const missId = props.snapshot.missPlayerId;
+
+  if (!popup || !missId || props.snapshot.phase !== 'pointPause') {
+    return;
+  }
+
+  const screen = projectPlayerHeadToCanvas(missId, scene);
+
+  if (!screen) {
+    return;
+  }
+
+  missPopup.value = {
+    ...popup,
+    x: screen.x,
+    y: screen.y,
+  };
+}
+
+function projectPlayerHeadToCanvas(
+  playerId: string,
+  scene: Scene | null = activeScene,
+): { x: number; y: number } | null {
+  const canvas = scene?.getEngine().getRenderingCanvas() ?? null;
+
+  if (!scene || !orbitCamera || !canvas) {
+    return null;
+  }
+
+  const actor = actors.get(playerId);
+  const player = props.snapshot.players.find((entry) => entry.id === playerId);
+  const worldX = actor?.root.position.x ?? player?.x;
+  const worldZ = actor?.root.position.z ?? player?.z;
+  const worldY = (actor?.root.position.y ?? player?.y ?? 0) + 1.55;
+
+  if (worldX == null || worldZ == null) {
+    return null;
+  }
+
+  const engine = scene.getEngine();
+  const tw = engine.getRenderWidth();
+  const th = engine.getRenderHeight();
+  const projected = Vector3.Project(
+    new Vector3(worldX, worldY, worldZ),
+    Matrix.Identity(),
+    scene.getTransformMatrix(),
+    orbitCamera.viewport.toGlobal(tw, th),
+  );
+
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (projected.x / tw) * rect.width,
+    y: (projected.y / th) * rect.height,
+  };
+}
+
 function beginCrownCeremony(snapshot: VolleyballSnapshot): void {
   if (!crownCeremony || !orbitCamera) {
     return;
@@ -613,7 +775,7 @@ function applyFixedSideCamera(
   // 紅隊 a 在 -Z；藍隊 b 在 +Z → 相機站在己方背後
   const alpha = localTeamId === 'b' ? Math.PI / 2 : -Math.PI / 2;
   const beta = Math.PI / 2.85;
-  const radius = 20;
+  const radius = 22.5;
 
   camera.inputs.clear();
   camera.detachControl();
@@ -666,6 +828,9 @@ const { canvasRef } = useBabylonScene({
       for (const actor of actors.values()) {
         actor.update(deltaMs);
       }
+
+      syncMissPopup(props.snapshot);
+      updateMissPopupScreenPos(scene);
 
       if (props.snapshot.phase === 'crownAward') {
         crownCeremony?.update(deltaMs);
@@ -736,23 +901,163 @@ onBeforeUnmount(() => {
   hitAnimUntil.clear();
   lastHitSerial = 0;
   lastSpikeBurstSerial = 0;
+  lastMissFxSerial = 0;
+  missPopup.value = null;
   lastPhase = null;
   sceneReady = false;
 });
 </script>
 
 <template>
-  <canvas
-    ref="canvasRef"
-    class="volleyball-scene"
-  />
+  <div class="volleyball-scene-root">
+    <canvas
+      ref="canvasRef"
+      class="volleyball-scene"
+    />
+    <div
+      v-if="missPopup"
+      :key="missPopup.serial"
+      class="vb-miss-popup font-game game-chrome"
+      :style="{
+        left: `${missPopup.x}px`,
+        top: `${missPopup.y}px`,
+      }"
+      aria-live="polite"
+    >
+      <span
+        class="vb-miss-popup__star"
+        aria-hidden="true"
+      >★</span>
+      <div class="vb-miss-popup__body">
+        <span class="vb-miss-popup__title">{{ missPopup.title }}</span>
+        <span class="vb-miss-popup__cue">{{ missPopup.cue }}</span>
+      </div>
+      <span
+        class="vb-miss-popup__star vb-miss-popup__star--flip"
+        aria-hidden="true"
+      >★</span>
+    </div>
+  </div>
 </template>
 
 <style lang="scss" scoped>
+.volleyball-scene-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
 .volleyball-scene {
   display: block;
   width: 100%;
   height: 100%;
   cursor: crosshair;
+}
+
+/* 漏接：瑪利歐派對風，無底框、粗描邊、彈上角色頭上 */
+.vb-miss-popup {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  gap: var(--space-xs);
+  align-items: center;
+  pointer-events: none;
+  transform: translate(-50%, -110%);
+  animation: vb-miss-pop 0.75s cubic-bezier(0.22, 1.4, 0.36, 1) both;
+}
+
+.vb-miss-popup__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  align-items: center;
+}
+
+.vb-miss-popup__title,
+.vb-miss-popup__cue {
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+  text-align: center;
+  -webkit-text-stroke: 1px var(--color-on-accent);
+  paint-order: stroke fill;
+  text-shadow:
+    3px 3px 0 var(--color-bg),
+    -2px -2px 0 var(--color-on-accent),
+    2px -2px 0 var(--color-on-accent),
+    -2px 2px 0 var(--color-on-accent),
+    2px 2px 0 var(--color-on-accent);
+}
+
+.vb-miss-popup__title {
+  color: var(--color-warning);
+  font-size: var(--font-size-2xl);
+  animation: vb-miss-wobble 0.9s ease-in-out 0.55s infinite;
+}
+
+.vb-miss-popup__cue {
+  color: var(--color-accent);
+  font-size: var(--font-size-lg);
+  animation: vb-miss-cue-bounce 0.8s ease-in-out 0.7s infinite;
+}
+
+.vb-miss-popup__star {
+  color: var(--color-warning);
+  font-size: var(--font-size-xl);
+  animation: vb-miss-star-spin 1.1s ease-in-out infinite;
+}
+
+.vb-miss-popup__star--flip {
+  animation-delay: 0.15s;
+}
+
+@keyframes vb-miss-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -40%) scale(0.4) rotate(-8deg);
+  }
+
+  55% {
+    opacity: 1;
+    transform: translate(-50%, -125%) scale(1.12) rotate(3deg);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -110%) scale(1) rotate(0deg);
+  }
+}
+
+@keyframes vb-miss-wobble {
+  0%,
+  100% {
+    transform: rotate(-3deg);
+  }
+
+  50% {
+    transform: rotate(3deg);
+  }
+}
+
+@keyframes vb-miss-cue-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(calc(var(--space-xs) * -1));
+  }
+}
+
+@keyframes vb-miss-star-spin {
+  0%,
+  100% {
+    transform: rotate(-12deg) scale(1);
+  }
+
+  50% {
+    transform: rotate(12deg) scale(1.15);
+  }
 }
 </style>

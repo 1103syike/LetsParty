@@ -13,6 +13,7 @@ import { RPS_MAIN_CAMERA } from '@/common/animals/animal-view-config';
 import { spawnQuaterniusArenaDecor } from '@/common/quaternius/load-quaternius-prop';
 import RpsChoiceIcon from '@/components/rps-choice-icon.vue';
 import { useBabylonScene } from '@/composables/use-babylon-scene';
+import { rpsCopy } from '@/minigames/rock-paper-scissors/locales/zh-TW';
 import { RpsAnimalActor } from '@/minigames/rock-paper-scissors/rps-animal-actor';
 import { RpsChaosRoam } from '@/minigames/rock-paper-scissors/rps-chaos-roam';
 import {
@@ -547,13 +548,17 @@ onBeforeUnmount(() => {
         :style="{
           left: `${marker.leftPct}%`,
           top: `${marker.topPct}%`,
-          borderColor: playerColorVar(marker.color),
+          '--claim-tone': playerColorVar(marker.color),
         }"
       >
-        <RpsChoiceIcon
-          :choice="marker.claim"
-          size="md"
-        />
+        <span class="rps-claim-bubble__label font-game">{{ rpsCopy.claimBubbleLabel }}</span>
+        <span class="rps-claim-bubble__icon-ring">
+          <RpsChoiceIcon
+            :choice="marker.claim"
+            size="xl"
+            bounce
+          />
+        </span>
         <span class="rps-claim-bubble__tail" />
       </div>
     </div>
@@ -587,30 +592,113 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
+/* 瑪利歐派對風貼紙對話框：大字 + 大 icon + 果凍感 */
 .rps-claim-bubble {
+  --claim-tone: var(--color-accent);
   position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  min-width: 6.5rem;
+  padding: var(--space-md) var(--space-md) var(--space-lg);
+  border: 4px solid var(--claim-tone);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(
+    165deg,
+    var(--color-on-accent) 0%,
+    color-mix(in srgb, var(--color-warning) 28%, white) 55%,
+    color-mix(in srgb, var(--claim-tone) 18%, white) 100%
+  );
+  box-shadow:
+    0 5px 0 color-mix(in srgb, var(--claim-tone) 55%, var(--color-text-heading)),
+    0 0 0 3px color-mix(in srgb, var(--color-on-accent) 80%, transparent);
+  transform: translate(-50%, calc(-100% - 0.5rem)) rotate(-3deg);
+  transform-origin: 50% 100%;
+  animation:
+    rps-claim-pop 0.48s cubic-bezier(0.22, 1.45, 0.36, 1) both,
+    rps-claim-jelly 2.8s ease-in-out 0.48s infinite;
+}
+
+.rps-claim-bubble__label {
+  font-size: var(--font-size-lg);
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  line-height: var(--line-height-tight);
+  white-space: nowrap;
+  color: var(--color-on-accent);
+  transform: rotate(-2deg);
+  text-shadow:
+    -3px -3px 0 var(--color-accent-hover),
+    3px -3px 0 var(--color-accent-hover),
+    -3px 3px 0 var(--color-accent-hover),
+    3px 3px 0 var(--color-accent-hover),
+    -3px 0 0 var(--color-accent-hover),
+    3px 0 0 var(--color-accent-hover),
+    0 -3px 0 var(--color-accent-hover),
+    0 3px 0 var(--color-accent-hover),
+    0 var(--space-xs) 0 color-mix(in srgb, var(--color-text-heading) 30%, transparent);
+}
+
+.rps-claim-bubble__icon-ring {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 3.25rem;
-  height: 2.75rem;
-  border: 3px solid;
-  border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 2px 0 rgba(92, 77, 130, 0.14);
-  transform: translate(-50%, calc(-100% - 0.35rem));
+  width: 5rem;
+  height: 5rem;
+  border: 3px solid color-mix(in srgb, var(--claim-tone) 65%, white);
+  border-radius: var(--radius-full);
+  background: radial-gradient(
+    circle at 40% 35%,
+    var(--color-on-accent) 0%,
+    color-mix(in srgb, var(--claim-tone) 16%, white) 100%
+  );
+  box-shadow:
+    inset 0 2px 0 color-mix(in srgb, var(--color-on-accent) 80%, transparent),
+    0 3px 0 color-mix(in srgb, var(--claim-tone) 35%, transparent);
 }
 
 .rps-claim-bubble__tail {
   position: absolute;
-  bottom: -0.4rem;
+  bottom: -0.55rem;
   left: 50%;
-  width: 0.7rem;
-  height: 0.7rem;
-  border-right: 3px solid;
-  border-bottom: 3px solid;
-  border-color: inherit;
-  background: rgba(255, 255, 255, 0.96);
+  width: 0.9rem;
+  height: 0.9rem;
+  border-right: 4px solid var(--claim-tone);
+  border-bottom: 4px solid var(--claim-tone);
+  background: color-mix(in srgb, var(--claim-tone) 18%, white);
   transform: translateX(-50%) rotate(45deg);
+}
+
+@keyframes rps-claim-pop {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-100% - 0.5rem)) rotate(-3deg) scale(0.4);
+  }
+
+  70% {
+    transform: translate(-50%, calc(-100% - 0.5rem)) rotate(-3deg) scale(1.08);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate(-50%, calc(-100% - 0.5rem)) rotate(-3deg) scale(1);
+  }
+}
+
+@keyframes rps-claim-jelly {
+  0%,
+  100% {
+    transform: translate(-50%, calc(-100% - 0.5rem)) rotate(-3deg) scale(1);
+  }
+
+  40% {
+    transform: translate(-50%, calc(-100% - 0.5rem)) rotate(-2deg) scale(1.04, 0.96);
+  }
+
+  60% {
+    transform: translate(-50%, calc(-100% - 0.5rem)) rotate(-4deg) scale(0.97, 1.03);
+  }
 }
 </style>

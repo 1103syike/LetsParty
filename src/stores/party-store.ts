@@ -31,6 +31,8 @@ export const usePartyStore = defineStore('party', {
   state: () => ({
     roomId: '' as string,
     isHost: false,
+    /** 測試模式：跳過大廳／loading，進房就開打 */
+    isTestMode: false,
     localParticipantId: null as string | null,
     settings: {
       targetCrowns: DEFAULT_TARGET_CROWNS,
@@ -69,6 +71,7 @@ export const usePartyStore = defineStore('party', {
     createRoom(roomId: string): void {
       this.roomId = roomId;
       this.isHost = true;
+      this.isTestMode = false;
       this.localParticipantId = 'host-local';
       this.participants = [
         {
@@ -82,6 +85,13 @@ export const usePartyStore = defineStore('party', {
       ];
       this.participants = fillCpuToFour(this.participants);
       this.crownHistory = createInitialCrownHistory(this.participants);
+    },
+
+    /** 開發／調手感：本機 + 3 CPU，進房後自動開打 */
+    startTestSession(roomId: string): void {
+      this.createRoom(roomId);
+      this.isTestMode = true;
+      this.setLocalDisplayName('測試玩家');
     },
 
     joinRoom(roomId: string, displayName = ''): void {
@@ -128,6 +138,15 @@ export const usePartyStore = defineStore('party', {
 
     fillCpuParticipants(): void {
       this.participants = fillCpuToFour(this.participants);
+    },
+
+    /** 測試模式每局重來：皇冠歸零 */
+    resetMatchProgress(): void {
+      this.participants = this.participants.map((participant) => ({
+        ...participant,
+        crownCount: 0,
+      }));
+      this.crownHistory = createInitialCrownHistory(this.participants);
     },
 
     setLocalAnimal(animalId: AnimalId): void {
@@ -183,6 +202,7 @@ export const usePartyStore = defineStore('party', {
     reset(): void {
       this.roomId = '';
       this.isHost = false;
+      this.isTestMode = false;
       this.localParticipantId = null;
       this.settings = {
         targetCrowns: DEFAULT_TARGET_CROWNS,

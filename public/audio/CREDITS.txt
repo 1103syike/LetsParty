@@ -1,0 +1,58 @@
+LetsParty — 音訊來源與授權
+（皆可商用；CC0 可不署名，建議仍寫進感謝名單）
+
+========== 建議對應 ==========
+SFX
+  /audio/sfx/click.ogg          UI 點擊
+  /audio/sfx/click-confirm.ogg  確認／開始
+  /audio/sfx/hover.ogg          UI 按鈕 hover（Kenney switch_002）
+  /audio/sfx/impact.ogg         一拳擂台撞擊（輕）
+  /audio/sfx/impact-heavy.ogg   一拳擂台撞擊（重）
+  /audio/sfx/hit-ball.ogg       沙灘排球擊球
+  /audio/sfx/hit-ball-alt.ogg   沙灘排球擊球（變化）
+  /audio/sfx/out.ogg            出界／失誤（Kenney error_005）
+  /audio/sfx/victory.ogg        勝利短樂（披薩撥弦風）
+  /audio/sfx/victory-alt.ogg    勝利短樂（8-bit）
+
+BGM
+  /audio/bgm/lobby.ogg          大廳
+  /audio/bgm/loading.ogg        載入中（與大廳相同）
+  /audio/bgm/rps.mp3            騙騙猜拳
+  /audio/bgm/arena.ogg          一拳擂台
+  /audio/bgm/volleyball.mp3     沙灘排球
+
+========== 授權明細 ==========
+
+[Kenney — CC0]
+  Interface Sounds  → click / click-confirm / hover / out
+  Impact Sounds     → impact / impact-heavy / hit-ball*
+  Music Jingles     → victory / victory-alt
+  完整包在 /audio/packs/kenney-*.zip
+  https://kenney.nl/assets/interface-sounds
+  https://kenney.nl/assets/impact-sounds
+  https://kenney.nl/assets/music-jingles
+  https://kenney.nl/assets/rpg-audio
+
+[OpenGameArt]
+  Feel Good Island Loop — Brandon Morris / AntumDeluge
+  License: CC0 / OGA-BY 3.0
+  → bgm/lobby.ogg, bgm/loading.ogg
+  https://opengameart.org/content/feel-good-island-loop
+
+  Talking Cute (Chiptune) — Alex McCulloch (Pro Sensory)
+  License: CC0
+  → bgm/rps.mp3
+  https://opengameart.org/content/talking-cute-chiptune
+
+  Tropical Loop — wipics
+  License: CC0
+  → bgm/arena.ogg
+  https://opengameart.org/content/tropical-loop
+
+  Funky House — Of Far Different Nature
+  License: CC0
+  → bgm/volleyball.mp3
+  https://opengameart.org/content/funky-house
+
+========== 重新下載 ==========
+  npm run fetch-audio

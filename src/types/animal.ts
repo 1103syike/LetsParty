@@ -1,4 +1,13 @@
-export const ANIMAL_IDS = ['pig', 'chicken', 'dog', 'sheep'] as const;
+export const ANIMAL_IDS = [
+  'pig',
+  'chicken',
+  'dog',
+  'sheep',
+  'wolf',
+  'horse',
+  'raccoon',
+  'cat',
+] as const;
 
 export type AnimalId = (typeof ANIMAL_IDS)[number];
 

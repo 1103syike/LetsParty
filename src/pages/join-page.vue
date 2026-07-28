@@ -1,14 +1,20 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { isValidRoomId } from '@/common/room-id';
 import ActionButton from '@/components/action-button.vue';
+import { usePartyBgm } from '@/composables/use-party-bgm';
 import { joinCopy } from '@/locales/zh-TW/join';
 import { usePartyStore } from '@/stores/party-store';
 
 const router = useRouter();
 const partyStore = usePartyStore();
+
+usePartyBgm({
+  phase: computed(() => 'home'),
+  gameId: computed(() => null),
+});
 
 const roomIdInput = ref('');
 

@@ -1,25 +1,27 @@
 <script setup lang="ts">
 import { computed, onScopeDispose, ref, watch } from 'vue';
 
+import { partyAudio } from '@/common/audio/party-audio';
 import ActionButton from '@/components/action-button.vue';
 import CrownBoardGrid from '@/components/crown-board-grid.vue';
+import MiniGameLoadingScreen from '@/components/minigame-loading-screen.vue';
 import PartyEndScreen from '@/components/party-end-screen.vue';
-import PartyIntroScreen from '@/components/party-intro-screen.vue';
 import RoundResultLeaderboard from '@/components/round-result-leaderboard.vue';
+import { homeCopy } from '@/locales/zh-TW/home';
+import { partyCopy } from '@/locales/zh-TW/party';
 import type { ArenaBumpSnapshot } from '@/minigames/arena-bump/arena-bump';
 import { ARENA_BUMP_ID } from '@/minigames/arena-bump/arena-bump-id';
 import ArenaBumpPlay from '@/minigames/arena-bump/arena-bump-play.vue';
 import { arenaBumpCopy } from '@/minigames/arena-bump/locales/zh-TW';
 import { mashButtonCopy } from '@/minigames/mash-button/locales/zh-TW';
 import { ROCK_PAPER_SCISSORS_ID } from '@/minigames/rock-paper-scissors';
-import RockPaperScissorsPlay from '@/minigames/rock-paper-scissors/rock-paper-scissors-play.vue';
 import type { RockPaperScissorsSnapshot } from '@/minigames/rock-paper-scissors';
+import RockPaperScissorsPlay from '@/minigames/rock-paper-scissors/rock-paper-scissors-play.vue';
 import { rpsCopy } from '@/minigames/rock-paper-scissors/locales/zh-TW';
-import { volleyballCopy } from '@/minigames/volleyball/locales/zh-TW';
 import type { VolleyballSnapshot } from '@/minigames/volleyball';
+import { volleyballCopy } from '@/minigames/volleyball/locales/zh-TW';
 import { VOLLEYBALL_ID } from '@/minigames/volleyball/volleyball-id';
 import VolleyballPlay from '@/minigames/volleyball/volleyball-play.vue';
-import { partyCopy } from '@/locales/zh-TW/party';
 import type { PartyMachinePhase } from '@/party/party-machine/party-machine';
 import {
   sortParticipantIdsByCrown,
@@ -32,7 +34,6 @@ const props = defineProps<{
   roundIndex: number;
   winnerIds: string[];
   isSuddenDeath: boolean;
-  introSecondsLeft: number;
   gameId: string | null;
   gameName: string;
   gameRules: string;
@@ -55,6 +56,8 @@ const emit = defineEmits<{
     jump: boolean;
     charge: boolean;
     defend: boolean;
+    aimX?: number | null;
+    aimZ?: number | null;
   }];
   volleyball: [value: {
     x: number;
@@ -67,6 +70,7 @@ const emit = defineEmits<{
     aimZ?: number | null;
   }];
   continueParty: [];
+  startIntroGame: [];
   backHome: [];
 }>();
 
@@ -133,6 +137,18 @@ const showFinalRankingOrder = ref(false);
 const showCrownGainPop = ref(false);
 const showRankDelta = ref(false);
 let roundResultEffectTimeoutIds: number[] = [];
+/** 同一局頒冠／結算只播一次勝利音 */
+let victoryPlayedForRound = false;
+
+function playVictoryOnce(): void {
+  if (victoryPlayedForRound) {
+    return;
+  }
+
+  victoryPlayedForRound = true;
+  partyAudio.stopBgm();
+  partyAudio.playSfx('victory');
+}
 
 const displayedRoundRankings = computed(() =>
   showFinalRankingOrder.value ? crownRankings.value : preRoundRankings.value,
@@ -210,7 +226,12 @@ function scheduleRoundResultEffects(): void {
 watch(
   () => props.phase,
   (nextPhase) => {
+    if (nextPhase === 'miniGamePlay') {
+      victoryPlayedForRound = false;
+    }
+
     if (nextPhase === 'roundResult') {
+      playVictoryOnce();
       scheduleRoundResultEffects();
       return;
     }
@@ -218,10 +239,23 @@ watch(
     clearRoundResultEffects();
 
     if (nextPhase === 'partyEnd') {
+      playVictoryOnce();
       showFinalRankingOrder.value = true;
     }
   },
   { immediate: true },
+);
+
+watch(
+  () =>
+    Boolean(props.arenaBumpSnapshot?.isCrownCeremony)
+    || Boolean(props.volleyballSnapshot?.isCrownCeremony)
+    || Boolean(props.rpsSnapshot?.isCrownCeremony),
+  (isCeremony, wasCeremony) => {
+    if (isCeremony && !wasCeremony) {
+      playVictoryOnce();
+    }
+  },
 );
 
 onScopeDispose(() => {
@@ -273,16 +307,12 @@ onScopeDispose(() => {
         <template v-else>{{ crownHint }}</template>
       </p>
 
-      <PartyIntroScreen
+      <MiniGameLoadingScreen
         v-if="isIntroPhase"
+        :game-id="gameId"
         :round-label="roundLabel"
-        :crown-hint="crownHint"
         :is-sudden-death="isSuddenDeath"
-        :intro-seconds-left="introSecondsLeft"
-        :game-name="gameName"
-        :game-rules="gameRules"
-        :participants="partyStore.participants"
-        :target-crowns="partyStore.settings.targetCrowns"
+        @start="emit('startIntroGame')"
       />
 
       <section
@@ -360,7 +390,11 @@ onScopeDispose(() => {
           class="round-result__continue"
           @click="emit('continueParty')"
         >
-          {{ partyCopy.continueParty }}
+          {{
+            partyStore.isTestMode
+              ? homeCopy.testModeBackToPicker
+              : partyCopy.continueParty
+          }}
         </ActionButton>
       </section>
 

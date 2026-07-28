@@ -7,7 +7,7 @@ export type PlayerInput =
   | { type: 'rps-claim'; choice: RpsChoice }
   | { type: 'button'; button: string }
   | { type: 'joystick'; x: number; y: number }
-  /** 擂台互推：移動 + 跳躍／衝撞／格擋 */
+  /** 擂台互推：移動 + 跳躍／衝撞／格擋（可帶滑鼠撞擊目標） */
   | {
       type: 'arena';
       x: number;
@@ -15,6 +15,9 @@ export type PlayerInput =
       jump: boolean;
       charge: boolean;
       defend: boolean;
+      /** 滑鼠點選的世界座標目標；沒帶則用當下轉向衝撞 */
+      aimX?: number | null;
+      aimZ?: number | null;
     }
   /** 2v2 排球：移動 + 跳躍／擊球／舉球／殺球（可帶滑鼠落點） */
   | {

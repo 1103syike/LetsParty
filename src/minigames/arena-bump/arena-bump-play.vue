@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue';
 
+import { partyAudio } from '@/common/audio/party-audio';
+import { getBumpCornerSpawn } from '@/common/arena/bump-physics';
 import AnimalModelPreview from '@/components/animal-model-preview.vue';
 import CuteCrownIcon from '@/components/cute-crown-icon.vue';
 import { partyCopy } from '@/locales/zh-TW/party';
@@ -23,6 +25,8 @@ const emit = defineEmits<{
     jump: boolean;
     charge: boolean;
     defend: boolean;
+    aimX?: number | null;
+    aimZ?: number | null;
   }];
 }>();
 
@@ -30,10 +34,24 @@ const partyStore = usePartyStore();
 
 /** 一律用 KeyboardEvent.code，不受輸入法／大小寫影響 */
 const heldCodes = new Set<string>();
-const defendHeld = ref(false);
 let jumpQueued = false;
 let chargeQueued = false;
+let chargeAim: { x: number; z: number } | null = null;
 let pumpRafId = 0;
+let lastHeardHitSerial = 0;
+
+watch(
+  () => props.snapshot.hitSerial,
+  (serial) => {
+    if (!serial || serial === lastHeardHitSerial || props.snapshot.hits.length === 0) {
+      return;
+    }
+
+    lastHeardHitSerial = serial;
+    const hasChargeHit = props.snapshot.hits.some((hit) => hit.kind === 'charge');
+    partyAudio.playSfx(hasChargeHit ? 'impactHeavy' : 'impact');
+  },
+);
 
 const STEER_CODES = new Set([
   'KeyW',
@@ -75,27 +93,46 @@ const isTimerUrgent = computed(
   () => props.snapshot.phase === 'playing' && props.snapshot.secondsLeft <= 10,
 );
 
+const chargeSkillLabel = computed(() => {
+  if (props.snapshot.localChargeReady) {
+    return arenaBumpCopy.skillChargeLabel;
+  }
+
+  if (props.snapshot.localChargeCooldownSeconds > 0) {
+    return arenaBumpCopy.skillChargeCooldownSeconds.replace(
+      '{seconds}',
+      props.snapshot.localChargeCooldownSeconds.toFixed(2),
+    );
+  }
+
+  return arenaBumpCopy.skillChargeCooldownShort;
+});
+
+const isCountdown = computed(() => props.snapshot.phase === 'countdown');
+
+const showCountdownOverlay = computed(
+  () => isCountdown.value || props.snapshot.showCountdownGo,
+);
+
+const countdownDisplay = computed(() => {
+  if (props.snapshot.showCountdownGo) {
+    return arenaBumpCopy.countdownGo;
+  }
+
+  return String(props.snapshot.countdownSecondsLeft);
+});
+
 const showStatusChip = computed(() => {
-  if (showCrownCeremony.value) {
+  if (showCrownCeremony.value || showCountdownOverlay.value) {
     return false;
   }
 
-  return props.snapshot.isSpawnGrace
-    || !props.snapshot.localAlive
-    || props.snapshot.localDefending;
+  return !props.snapshot.localAlive;
 });
 
 const statusLabel = computed(() => {
-  if (props.snapshot.isSpawnGrace) {
-    return arenaBumpCopy.graceHint;
-  }
-
   if (!props.snapshot.localAlive) {
     return arenaBumpCopy.youFell;
-  }
-
-  if (props.snapshot.localDefending) {
-    return arenaBumpCopy.statusDefend;
   }
 
   return arenaBumpCopy.name;
@@ -144,26 +181,45 @@ function hudCardClass(color: Participant['color']): string {
   return `arena-hud__card--${color}`;
 }
 
+/** 依鎖定鏡頭（本機開局面向）把螢幕前後左右轉成世界 xz */
 function readSteer(): { x: number; y: number } {
-  let x = 0;
-  let y = 0;
+  let screenX = 0;
+  let screenY = 0;
 
   if (heldCodes.has('KeyA') || heldCodes.has('ArrowLeft')) {
-    x -= 1;
+    screenX -= 1;
   }
 
   if (heldCodes.has('KeyD') || heldCodes.has('ArrowRight')) {
-    x += 1;
+    screenX += 1;
   }
 
   if (heldCodes.has('KeyW') || heldCodes.has('ArrowUp')) {
-    y += 1;
+    screenY += 1;
   }
 
   if (heldCodes.has('KeyS') || heldCodes.has('ArrowDown')) {
-    y -= 1;
+    screenY -= 1;
   }
 
+  if (screenX === 0 && screenY === 0) {
+    return { x: 0, y: 0 };
+  }
+
+  const localId = partyStore.localParticipantId;
+  const spawnIndex = partyStore.participants.findIndex((participant) => participant.id === localId);
+  const spawn = getBumpCornerSpawn(
+    spawnIndex >= 0 ? spawnIndex : 0,
+    Math.max(partyStore.participants.length, 1),
+  );
+  // W：朝開局面向（進畫面深處）；D：螢幕右側
+  const forwardX = spawn.facingX;
+  const forwardZ = spawn.facingZ;
+  const rightX = spawn.facingZ;
+  const rightZ = -spawn.facingX;
+
+  let x = screenX * rightX + screenY * forwardX;
+  let y = screenX * rightZ + screenY * forwardZ;
   const mag = Math.hypot(x, y);
 
   if (mag > 1) {
@@ -174,7 +230,11 @@ function readSteer(): { x: number; y: number } {
   return { x, y };
 }
 
-function emitControl(jump: boolean, charge: boolean): void {
+function emitControl(
+  jump: boolean,
+  charge: boolean,
+  aim: { x: number; z: number } | null,
+): void {
   if (!props.snapshot.localAlive || props.snapshot.phase !== 'playing') {
     emit('arena', {
       x: 0,
@@ -182,6 +242,8 @@ function emitControl(jump: boolean, charge: boolean): void {
       jump: false,
       charge: false,
       defend: false,
+      aimX: null,
+      aimZ: null,
     });
     return;
   }
@@ -192,17 +254,34 @@ function emitControl(jump: boolean, charge: boolean): void {
     y: steer.y,
     jump,
     charge,
-    defend: defendHeld.value,
+    defend: false,
+    aimX: charge ? aim?.x ?? null : null,
+    aimZ: charge ? aim?.z ?? null : null,
   });
 }
 
 function pumpControls(): void {
   const shouldJump = jumpQueued;
   const shouldCharge = chargeQueued;
+  const aim = chargeAim;
   jumpQueued = false;
   chargeQueued = false;
-  emitControl(shouldJump, shouldCharge);
+  chargeAim = null;
+  emitControl(shouldJump, shouldCharge, aim);
   pumpRafId = window.requestAnimationFrame(pumpControls);
+}
+
+function onStageClick(point: { x: number; z: number }): void {
+  if (
+    !props.snapshot.localAlive
+    || props.snapshot.phase !== 'playing'
+    || !props.snapshot.localChargeReady
+  ) {
+    return;
+  }
+
+  chargeQueued = true;
+  chargeAim = point;
 }
 
 function onKeyDown(event: KeyboardEvent): void {
@@ -222,22 +301,6 @@ function onKeyDown(event: KeyboardEvent): void {
     return;
   }
 
-  if (code === 'KeyX') {
-    event.preventDefault();
-
-    if (props.snapshot.localAlive && props.snapshot.localChargeReady) {
-      chargeQueued = true;
-    }
-
-    return;
-  }
-
-  if (code === 'KeyZ') {
-    event.preventDefault();
-    defendHeld.value = true;
-    return;
-  }
-
   if (!STEER_CODES.has(code)) {
     return;
   }
@@ -248,11 +311,6 @@ function onKeyDown(event: KeyboardEvent): void {
 
 function onKeyUp(event: KeyboardEvent): void {
   const { code } = event;
-
-  if (code === 'KeyZ') {
-    defendHeld.value = false;
-    return;
-  }
 
   if (!STEER_CODES.has(code)) {
     return;
@@ -271,12 +329,15 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('keyup', onKeyUp);
   window.cancelAnimationFrame(pumpRafId);
+  chargeAim = null;
   emit('arena', {
     x: 0,
     y: 0,
     jump: false,
     charge: false,
     defend: false,
+    aimX: null,
+    aimZ: null,
   });
 });
 </script>
@@ -287,12 +348,15 @@ onBeforeUnmount(() => {
       class="arena-bump-play"
       :class="{ 'arena-bump-play--crown-ceremony': showCrownCeremony }"
     >
-      <ArenaBumpScene :snapshot="snapshot" />
+      <ArenaBumpScene
+        :snapshot="snapshot"
+        @stage-click="onStageClick"
+      />
 
-      <!-- 跟猜拳同一套右上記分板 -->
+      <!-- 瑪利歐派對風右上記分板 -->
       <aside
         v-if="!showCrownCeremony"
-        class="arena-hud"
+        class="arena-hud game-chrome"
         :aria-label="arenaBumpCopy.scoreboardTitle"
       >
         <div class="arena-hud__round font-game">{{ roundLabel }}</div>
@@ -319,6 +383,10 @@ onBeforeUnmount(() => {
                   :player-color="row.participant.color"
                 />
               </div>
+              <span
+                v-if="!row.isAlive"
+                class="arena-hud__fallen-stamp font-game"
+              >{{ arenaBumpCopy.resultFallen }}</span>
               <span class="arena-hud__slot font-game">{{ playerSlotLabel(row.slot) }}</span>
             </div>
 
@@ -327,7 +395,7 @@ onBeforeUnmount(() => {
                 {{ row.participant.displayName }}
                 <span
                   v-if="row.participant.id === localParticipantId"
-                  class="arena-hud__you"
+                  class="arena-hud__you font-game"
                 >{{ arenaBumpCopy.localPlayerTag }}</span>
               </span>
             </div>
@@ -347,62 +415,87 @@ onBeforeUnmount(() => {
           class="arena-hud__timer"
           :class="{ 'arena-hud__timer--urgent': isTimerUrgent }"
         >
-          <span class="arena-hud__timer-label">
+          <span class="arena-hud__timer-label font-game">
             {{ arenaBumpCopy.timerAliveLabel }} {{ snapshot.aliveCount }}
           </span>
           <span class="arena-hud__timer-value font-game">{{ snapshot.secondsLeft }}</span>
         </div>
       </aside>
 
+      <div
+        v-if="showCountdownOverlay"
+        class="arena-bump-play__countdown game-chrome"
+        aria-live="assertive"
+      >
+        <p
+          v-if="isCountdown"
+          class="arena-bump-play__countdown-label font-game"
+        >
+          {{ arenaBumpCopy.countdownLabel }}
+        </p>
+        <p
+          :key="countdownDisplay"
+          class="arena-bump-play__countdown-value font-game"
+          :class="{
+            'arena-bump-play__countdown-value--go': snapshot.showCountdownGo,
+            'arena-bump-play__countdown-value--urgent': isCountdown && snapshot.countdownSecondsLeft <= 2,
+          }"
+        >
+          {{ countdownDisplay }}
+        </p>
+      </div>
+
       <p
         v-if="showStatusChip"
-        class="arena-bump-play__status font-game"
+        class="arena-bump-play__status font-game game-chrome"
         :class="{
-          'arena-bump-play__status--grace': snapshot.isSpawnGrace,
-          'arena-bump-play__status--fell': !snapshot.localAlive && !snapshot.isSpawnGrace,
-          'arena-bump-play__status--defend': snapshot.localDefending,
+          'arena-bump-play__status--fell': !snapshot.localAlive,
         }"
       >
         {{ statusLabel }}
       </p>
 
       <div
-        v-if="snapshot.localAlive && !showCrownCeremony"
-        class="arena-bump-play__skills"
+        v-if="snapshot.localAlive && !showCrownCeremony && !showCountdownOverlay"
+        class="arena-bump-play__skills game-chrome"
       >
-        <span class="arena-bump-play__skill font-game">
-          {{ arenaBumpCopy.skillJump }}
-        </span>
-        <span
-          class="arena-bump-play__skill font-game"
-          :class="{ 'arena-bump-play__skill--ready': snapshot.localChargeReady }"
+        <div class="arena-bump-play__skill arena-bump-play__skill--jump">
+          <span class="arena-bump-play__skill-key font-game">{{ arenaBumpCopy.skillJumpKey }}</span>
+          <span class="arena-bump-play__skill-label font-game">{{ arenaBumpCopy.skillJumpLabel }}</span>
+        </div>
+        <div
+          class="arena-bump-play__skill arena-bump-play__skill--charge"
+          :class="{
+            'arena-bump-play__skill--ready': snapshot.localChargeReady,
+            'arena-bump-play__skill--cooling': !snapshot.localChargeReady,
+          }"
         >
-          {{ arenaBumpCopy.skillCharge }}
-        </span>
-        <span
-          class="arena-bump-play__skill font-game"
-          :class="{ 'arena-bump-play__skill--on': snapshot.localDefending }"
-        >
-          {{ arenaBumpCopy.skillDefend }}
-        </span>
+          <span class="arena-bump-play__skill-key font-game">{{ arenaBumpCopy.skillChargeKey }}</span>
+          <span
+            class="arena-bump-play__skill-label font-game"
+            :class="{ 'arena-bump-play__skill-label--countdown': snapshot.localChargeCooldownSeconds > 0 }"
+          >
+            {{ chargeSkillLabel }}
+          </span>
+        </div>
       </div>
 
       <p
-        v-if="snapshot.localAlive && !showCrownCeremony"
-        class="arena-bump-play__hint font-game"
+        v-if="snapshot.localAlive && !showCrownCeremony && !showCountdownOverlay"
+        class="arena-bump-play__hint font-game game-chrome"
       >
         {{ arenaBumpCopy.hintMove }}
       </p>
       <p
-        v-else-if="!showCrownCeremony && !snapshot.winnerId"
-        class="arena-bump-play__hint arena-bump-play__hint--spectate font-game"
+        v-else-if="!showCrownCeremony && !snapshot.winnerId && !showCountdownOverlay"
+        class="arena-bump-play__hint arena-bump-play__hint--spectate font-game game-chrome"
       >
         {{ arenaBumpCopy.spectateHint }}
       </p>
 
       <div
         v-if="showCrownCeremony"
-        class="crown-ceremony"
+        class="crown-ceremony game-chrome"
         aria-live="polite"
       >
         <div
@@ -419,7 +512,7 @@ onBeforeUnmount(() => {
 
       <div
         v-else-if="winnerBannerText"
-        class="arena-bump-play__winner font-game"
+        class="arena-bump-play__winner font-game game-chrome"
         aria-live="polite"
       >
         <span class="arena-bump-play__winner-kicker">{{ arenaBumpCopy.winnerBanner }}</span>
@@ -435,10 +528,15 @@ onBeforeUnmount(() => {
   inset: 0;
   z-index: 200;
   overflow: hidden;
-  background: #b8dce8;
+  /* 3D 天空露出色（與場景一致，非 UI token） */
+  background: #7ec8f0;
 
   &--crown-ceremony {
-    background: linear-gradient(180deg, rgba(88, 76, 118, 0.92), rgba(46, 38, 64, 0.96));
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-text-heading) 88%, black) 0%,
+      color-mix(in srgb, var(--color-text-heading) 96%, black) 100%
+    );
   }
 }
 
@@ -459,13 +557,13 @@ onBeforeUnmount(() => {
 .crown-ceremony__burst {
   position: absolute;
   top: calc(var(--space-lg) + env(safe-area-inset-top));
-  width: min(18rem, 72vw);
-  height: min(18rem, 72vw);
+  width: min(20rem, 78vw);
+  height: min(20rem, 78vw);
   border-radius: 50%;
   background: radial-gradient(
     circle,
-    color-mix(in srgb, var(--color-warning) 42%, transparent) 0%,
-    color-mix(in srgb, var(--color-warning) 12%, transparent) 42%,
+    color-mix(in srgb, var(--color-warning) 55%, transparent) 0%,
+    color-mix(in srgb, var(--color-warning) 18%, transparent) 42%,
     transparent 72%
   );
   animation: crown-ceremony-burst 1.1s ease-in-out infinite;
@@ -474,9 +572,14 @@ onBeforeUnmount(() => {
 .crown-ceremony__kicker {
   position: relative;
   margin: 0;
+  padding: var(--space-xs) var(--space-md);
+  border: 3px solid var(--color-on-accent);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-surface-solid) 92%, white);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-text-heading) 35%, transparent);
   font-size: var(--font-size-lg);
-  letter-spacing: 0.12em;
-  color: #f5f0e8;
+  letter-spacing: 0.14em;
+  color: var(--color-text-heading);
   animation: crown-ceremony-pop 0.55s cubic-bezier(0.22, 1.08, 0.36, 1) backwards;
 }
 
@@ -484,11 +587,15 @@ onBeforeUnmount(() => {
   position: relative;
   margin: 0;
   padding: 0 var(--space-md);
-  font-size: var(--font-size-2xl);
+  font-size: clamp(var(--font-size-2xl), 7vw, var(--font-size-3xl));
   line-height: var(--line-height-tight);
   text-align: center;
   color: var(--color-warning);
-  text-shadow: 0 var(--space-xs) 0 rgba(26, 21, 36, 0.35);
+  text-shadow:
+    3px 3px 0 color-mix(in srgb, var(--color-text-heading) 55%, black),
+    -2px -2px 0 color-mix(in srgb, var(--color-text-heading) 40%, black),
+    2px -2px 0 color-mix(in srgb, var(--color-text-heading) 40%, black),
+    -2px 2px 0 color-mix(in srgb, var(--color-text-heading) 40%, black);
   animation: crown-ceremony-pop 0.62s cubic-bezier(0.22, 1.08, 0.36, 1) 0.08s backwards;
 }
 
@@ -505,7 +612,7 @@ onBeforeUnmount(() => {
 @keyframes crown-ceremony-pop {
   from {
     opacity: 0;
-    transform: translateY(var(--space-md)) scale(0.88);
+    transform: translateY(var(--space-md)) scale(0.82);
   }
 
   to {
@@ -523,7 +630,7 @@ onBeforeUnmount(() => {
 
   50% {
     opacity: 1;
-    transform: scale(1.04);
+    transform: scale(1.06);
   }
 }
 
@@ -539,7 +646,6 @@ onBeforeUnmount(() => {
   touch-action: none;
 }
 
-/* 瑪利歐派對風：大頭像 + 右對齊皇冠（對齊猜拳 rps-hud） */
 .arena-hud {
   position: absolute;
   top: calc(var(--space-md) + env(safe-area-inset-top));
@@ -548,27 +654,27 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: var(--space-xs);
-  width: min(13.5rem, 48vw);
+  gap: var(--space-sm);
+  width: min(14.5rem, 52vw);
   pointer-events: none;
 }
 
 .arena-hud__round {
   align-self: flex-end;
   padding: var(--space-xs) var(--space-sm);
-  border: 2px solid color-mix(in srgb, var(--color-border) 70%, white);
+  border: 3px solid color-mix(in srgb, var(--color-border) 55%, white);
   border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--color-surface) 94%, white);
+  background: color-mix(in srgb, var(--color-surface-solid) 96%, white);
   font-size: var(--font-size-xs);
-  letter-spacing: 0.04em;
-  color: var(--color-text);
-  box-shadow: 2px 2px 0 color-mix(in srgb, var(--color-border) 40%, transparent);
+  letter-spacing: 0.06em;
+  color: var(--color-text-heading);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-text-heading) 22%, transparent);
 }
 
 .arena-hud__list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -580,15 +686,15 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-sm);
   padding: var(--space-xs) var(--space-sm) var(--space-xs) var(--space-xs);
-  border: 3px solid var(--hud-tone);
+  border: 4px solid var(--hud-tone);
   border-radius: var(--radius-md);
   background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--hud-tone) 34%, white) 0%,
-    color-mix(in srgb, var(--color-surface) 70%, white) 55%,
+    145deg,
+    color-mix(in srgb, var(--hud-tone) 42%, white) 0%,
+    color-mix(in srgb, var(--color-surface-solid) 80%, white) 52%,
     white 100%
   );
-  box-shadow: 3px 3px 0 color-mix(in srgb, var(--hud-tone) 42%, transparent);
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--hud-tone) 48%, transparent);
 
   &--player-1 {
     --hud-tone: var(--color-player-1);
@@ -607,26 +713,39 @@ onBeforeUnmount(() => {
   }
 
   &--leader {
-    box-shadow:
-      3px 3px 0 color-mix(in srgb, var(--hud-tone) 42%, transparent),
-      0 0 0 2px color-mix(in srgb, var(--color-warning) 60%, white);
+    animation: arena-hud-leader-pulse 1.2s ease-in-out infinite;
   }
 
   &--local {
-    outline: 2px solid color-mix(in srgb, var(--color-accent) 60%, white);
-    outline-offset: 1px;
+    outline: 3px solid color-mix(in srgb, var(--color-accent) 70%, white);
+    outline-offset: 2px;
   }
 
   &--fallen {
-    opacity: 0.48;
-    filter: grayscale(0.35);
+    opacity: 0.72;
+    filter: grayscale(0.55);
+  }
+}
+
+@keyframes arena-hud-leader-pulse {
+  0%,
+  100% {
+    box-shadow:
+      4px 4px 0 color-mix(in srgb, var(--hud-tone) 48%, transparent),
+      0 0 0 2px color-mix(in srgb, var(--color-warning) 55%, white);
+  }
+
+  50% {
+    box-shadow:
+      4px 4px 0 color-mix(in srgb, var(--hud-tone) 48%, transparent),
+      0 0 0 4px color-mix(in srgb, var(--color-warning) 80%, white);
   }
 }
 
 .arena-hud__portrait-wrap {
   position: relative;
-  width: 3.5rem;
-  height: 3.5rem;
+  width: 3.75rem;
+  height: 3.75rem;
   flex-shrink: 0;
 }
 
@@ -649,14 +768,30 @@ onBeforeUnmount(() => {
   }
 }
 
+.arena-hud__fallen-stamp {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-text-heading) 42%, transparent);
+  color: var(--color-on-accent);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.08em;
+  text-shadow: 1px 1px 0 color-mix(in srgb, var(--color-text-heading) 50%, black);
+  transform: rotate(-18deg);
+  pointer-events: none;
+}
+
 .arena-hud__slot {
   position: absolute;
   left: 0;
   bottom: 0;
-  z-index: 1;
+  z-index: 3;
   display: grid;
   place-items: center;
-  min-width: 1.35rem;
+  min-width: 1.4rem;
   padding: 0 var(--space-xs);
   border: 2px solid var(--color-on-accent);
   border-radius: var(--radius-sm);
@@ -664,8 +799,8 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-xs);
   line-height: 1.15;
   color: var(--color-on-accent);
-  box-shadow: 1px 1px 0 color-mix(in srgb, var(--hud-tone) 45%, transparent);
-  transform: translate(-20%, 20%);
+  box-shadow: 2px 2px 0 color-mix(in srgb, var(--hud-tone) 45%, transparent);
+  transform: translate(-18%, 18%);
 }
 
 .arena-hud__body {
@@ -683,13 +818,16 @@ onBeforeUnmount(() => {
 }
 
 .arena-hud__you {
-  margin-left: 2px;
+  margin-left: var(--space-xs);
   padding: 0 var(--space-xs);
+  border: 2px solid color-mix(in srgb, var(--color-accent) 55%, white);
   border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 28%, white);
   font-size: var(--font-size-xs);
-  color: var(--color-accent);
+  letter-spacing: 0.04em;
+  color: var(--color-on-accent);
   vertical-align: middle;
+  text-shadow: 1px 1px 0 color-mix(in srgb, var(--color-accent-hover) 55%, transparent);
 }
 
 .arena-hud__crowns {
@@ -704,35 +842,169 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-2xl);
   line-height: 1;
   color: var(--color-text-heading);
-  text-shadow: 1px 1px 0 color-mix(in srgb, var(--color-warning) 40%, white);
+  text-shadow: 2px 2px 0 color-mix(in srgb, var(--color-warning) 45%, white);
 }
 
 .arena-hud__timer {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-sm);
-  min-height: 2.5rem;
-  padding: 0 var(--space-sm);
-  border: 3px solid color-mix(in srgb, var(--color-accent) 40%, white);
-  border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--color-accent) 12%, white);
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border: 4px solid color-mix(in srgb, var(--color-accent) 55%, white);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-accent) 28%, white) 0%,
+    color-mix(in srgb, var(--color-surface-solid) 92%, white) 100%
+  );
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--color-accent) 40%, transparent);
 
   &--urgent {
-    border-color: color-mix(in srgb, var(--color-accent) 70%, white);
-    background: color-mix(in srgb, var(--color-accent) 22%, white);
+    border-color: color-mix(in srgb, var(--color-warning) 70%, white);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-warning) 48%, white) 0%,
+      color-mix(in srgb, var(--color-surface-solid) 90%, white) 100%
+    );
+    box-shadow: 4px 4px 0 color-mix(in srgb, var(--color-warning) 45%, transparent);
+    animation: arena-timer-shake 0.55s ease-in-out infinite;
   }
 }
 
 .arena-hud__timer-label {
   font-size: var(--font-size-xs);
+  letter-spacing: 0.08em;
   color: var(--color-text-heading);
 }
 
 .arena-hud__timer-value {
-  font-size: var(--font-size-xl);
+  font-size: var(--font-size-3xl);
   line-height: 1;
   color: var(--color-text-heading);
+  text-shadow: 2px 2px 0 color-mix(in srgb, var(--color-accent) 35%, white);
+  padding-top: 0.08em;
+
+  .arena-hud__timer--urgent & {
+    color: color-mix(in srgb, var(--color-warning) 35%, var(--color-text-heading));
+    text-shadow: 2px 2px 0 color-mix(in srgb, var(--color-warning) 50%, white);
+    animation: arena-timer-pulse 0.55s ease-in-out infinite;
+  }
+}
+
+@keyframes arena-timer-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.12);
+  }
+}
+
+@keyframes arena-timer-shake {
+  0%,
+  100% {
+    transform: rotate(-0.6deg);
+  }
+
+  50% {
+    transform: rotate(0.6deg);
+  }
+}
+
+.arena-bump-play__countdown {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  background: color-mix(in srgb, var(--color-text-heading) 18%, transparent);
+  pointer-events: none;
+}
+
+.arena-bump-play__countdown-label {
+  margin: 0;
+  padding: var(--space-xs) var(--space-lg);
+  border: 3px solid var(--color-on-accent);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-surface-solid) 96%, white);
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--color-text-heading) 28%, transparent);
+  color: var(--color-text-heading);
+  font-size: var(--font-size-xl);
+  line-height: 1;
+  letter-spacing: 0.12em;
+}
+
+.arena-bump-play__countdown-value {
+  margin: 0;
+  min-width: 5.5rem;
+  padding: var(--space-lg) var(--space-xl);
+  border: 5px solid var(--color-on-accent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-accent) 78%, black);
+  box-shadow: 0 var(--space-md) 0 color-mix(in srgb, var(--color-text-heading) 35%, transparent);
+  color: var(--color-on-accent);
+  font-size: var(--font-size-3xl);
+  line-height: 1;
+  text-align: center;
+  text-shadow:
+    4px 4px 0 color-mix(in srgb, var(--color-text-heading) 55%, black),
+    -2px -2px 0 color-mix(in srgb, var(--color-text-heading) 35%, black);
+  animation: arena-countdown-pop 0.42s cubic-bezier(0.22, 1.35, 0.36, 1);
+
+  &--urgent {
+    background: color-mix(in srgb, var(--color-warning) 82%, white);
+    color: var(--color-text-heading);
+    text-shadow: 3px 3px 0 color-mix(in srgb, var(--color-warning) 40%, black);
+  }
+
+  &--go {
+    min-width: 10rem;
+    background: color-mix(in srgb, var(--color-success) 78%, white);
+    color: var(--color-text-heading);
+    font-size: clamp(var(--font-size-2xl), 10vw, var(--font-size-3xl));
+    text-shadow: 3px 3px 0 color-mix(in srgb, var(--color-success) 40%, black);
+    animation: arena-countdown-go 0.48s cubic-bezier(0.22, 1.45, 0.36, 1);
+  }
+}
+
+@keyframes arena-countdown-pop {
+  0% {
+    transform: scale(1.55);
+    opacity: 0.2;
+  }
+
+  70% {
+    transform: scale(0.92);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes arena-countdown-go {
+  0% {
+    transform: scaleX(1.45) scaleY(0.72);
+    opacity: 0.25;
+  }
+
+  65% {
+    transform: scaleX(0.94) scaleY(1.08);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scaleX(1) scaleY(1);
+    opacity: 1;
+  }
 }
 
 .arena-bump-play__status {
@@ -740,13 +1012,13 @@ onBeforeUnmount(() => {
   top: calc(var(--space-md) + env(safe-area-inset-top));
   left: calc(var(--space-md) + env(safe-area-inset-left));
   z-index: 3;
-  max-width: min(40vw, 10rem);
+  max-width: min(42vw, 11rem);
   margin: 0;
   padding: var(--space-sm) var(--space-md);
-  border: 3px solid rgba(255, 255, 255, 0.92);
+  border: 3px solid var(--color-on-accent);
   border-radius: var(--radius-full);
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 3px 3px 0 rgba(92, 77, 130, 0.12);
+  background: color-mix(in srgb, var(--color-surface-solid) 96%, white);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-text-heading) 22%, transparent);
   color: var(--color-text-heading);
   font-size: clamp(var(--font-size-sm), 3.6vw, var(--font-size-lg));
   line-height: 1;
@@ -757,56 +1029,102 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   pointer-events: none;
 
-  &--grace {
-    border-color: color-mix(in srgb, var(--color-success) 45%, white);
-    background: color-mix(in srgb, var(--color-success) 18%, white);
-  }
-
   &--fell {
-    border-color: color-mix(in srgb, var(--color-accent) 40%, white);
+    border-color: color-mix(in srgb, var(--color-accent) 50%, white);
     background: color-mix(in srgb, var(--color-accent) 78%, black);
     color: var(--color-on-accent);
-  }
-
-  &--defend {
-    border-color: color-mix(in srgb, var(--color-player-3) 50%, white);
-    background: color-mix(in srgb, var(--color-player-3) 22%, white);
+    box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-accent) 40%, transparent);
   }
 }
 
 .arena-bump-play__skills {
   position: absolute;
-  top: calc(var(--space-xl) + var(--space-lg) + env(safe-area-inset-top));
+  bottom: calc(var(--space-xl) + var(--space-lg) + env(safe-area-inset-bottom));
   left: 50%;
   z-index: 3;
   display: flex;
-  gap: var(--space-sm);
+  gap: var(--space-md);
   transform: translateX(-50%);
   pointer-events: none;
 }
 
 .arena-bump-play__skill {
-  padding: var(--space-xs) var(--space-sm);
-  border: 2px solid rgba(255, 255, 255, 0.85);
-  border-radius: var(--radius-full);
-  background: rgba(255, 255, 255, 0.72);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  line-height: 1;
-  opacity: 0.72;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 4.5rem;
+  padding: var(--space-sm) var(--space-md);
+  border: 3px solid color-mix(in srgb, var(--color-player-3) 55%, white);
+  border-radius: var(--radius-md);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-player-3) 28%, white) 0%,
+    color-mix(in srgb, var(--color-surface-solid) 94%, white) 100%
+  );
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-player-3) 40%, transparent);
+  color: var(--color-text-heading);
 
-  &--ready {
-    border-color: color-mix(in srgb, var(--color-warning) 55%, white);
-    background: color-mix(in srgb, var(--color-warning) 22%, white);
-    color: var(--color-text-heading);
-    opacity: 1;
+  &--jump {
+    border-color: color-mix(in srgb, var(--color-player-4) 55%, white);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-player-4) 30%, white) 0%,
+      color-mix(in srgb, var(--color-surface-solid) 94%, white) 100%
+    );
+    box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-player-4) 40%, transparent);
   }
 
-  &--on {
-    border-color: color-mix(in srgb, var(--color-player-3) 55%, white);
-    background: color-mix(in srgb, var(--color-player-3) 24%, white);
-    color: var(--color-text-heading);
-    opacity: 1;
+  &--charge.arena-bump-play__skill--ready {
+    border-color: color-mix(in srgb, var(--color-warning) 65%, white);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-warning) 55%, white) 0%,
+      color-mix(in srgb, var(--color-surface-solid) 90%, white) 100%
+    );
+    box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-warning) 48%, transparent);
+    animation: arena-skill-ready 0.9s ease-in-out infinite;
+  }
+
+  &--charge.arena-bump-play__skill--cooling {
+    border-color: color-mix(in srgb, var(--color-text-muted) 45%, white);
+    background: color-mix(in srgb, var(--color-surface-solid) 88%, var(--color-text-muted));
+    box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-text-muted) 30%, transparent);
+    opacity: 0.78;
+  }
+}
+
+.arena-bump-play__skill-key {
+  padding: var(--space-xs) var(--space-sm);
+  border: 2px solid color-mix(in srgb, var(--color-text-heading) 22%, white);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-surface-solid) 96%, white);
+  font-size: var(--font-size-sm);
+  line-height: 1;
+  letter-spacing: 0.04em;
+  box-shadow: 0 2px 0 color-mix(in srgb, var(--color-text-heading) 18%, transparent);
+}
+
+.arena-bump-play__skill-label {
+  font-size: var(--font-size-sm);
+  line-height: 1;
+  letter-spacing: 0.06em;
+
+  &--countdown {
+    font-size: var(--font-size-lg);
+    letter-spacing: 0.04em;
+    color: var(--color-text-muted);
+  }
+}
+
+@keyframes arena-skill-ready {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+
+  50% {
+    transform: translateY(calc(var(--space-xs) * -1)) scale(1.04);
   }
 }
 
@@ -818,33 +1136,44 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-xs);
-  padding: var(--space-md) var(--space-lg);
-  border: 3px solid rgba(255, 255, 255, 0.95);
+  gap: var(--space-sm);
+  min-width: min(18rem, 78vw);
+  padding: var(--space-lg) var(--space-xl);
+  border: 4px solid var(--color-on-accent);
   border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 6px 0 rgba(92, 77, 130, 0.14);
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--color-warning) 35%, white) 0%,
+    color-mix(in srgb, var(--color-surface-solid) 96%, white) 55%,
+    white 100%
+  );
+  box-shadow: 0 var(--space-md) 0 color-mix(in srgb, var(--color-text-heading) 28%, transparent);
   transform: translate(-50%, -50%);
   pointer-events: none;
-  animation: arena-bump-winner-in 0.4s cubic-bezier(0.22, 1.12, 0.36, 1);
+  animation: arena-bump-winner-in 0.48s cubic-bezier(0.22, 1.35, 0.36, 1);
 }
 
 .arena-bump-play__winner-kicker {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-  letter-spacing: 0.08em;
+  padding: var(--space-xs) var(--space-md);
+  border: 2px solid color-mix(in srgb, var(--color-warning) 55%, white);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-warning) 28%, white);
+  color: var(--color-text-heading);
+  font-size: var(--font-size-md);
+  letter-spacing: 0.12em;
 }
 
 .arena-bump-play__winner-name {
   color: var(--color-text-heading);
-  font-size: var(--font-size-xl);
+  font-size: clamp(var(--font-size-xl), 5.5vw, var(--font-size-2xl));
   text-align: center;
+  text-shadow: 2px 2px 0 color-mix(in srgb, var(--color-warning) 40%, white);
 }
 
 @keyframes arena-bump-winner-in {
   from {
     opacity: 0;
-    transform: translate(-50%, -40%) scale(0.92);
+    transform: translate(-50%, -32%) scale(0.84);
   }
 
   to {
@@ -855,25 +1184,29 @@ onBeforeUnmount(() => {
 
 .arena-bump-play__hint {
   position: absolute;
-  bottom: calc(var(--space-lg) + env(safe-area-inset-bottom));
+  bottom: calc(var(--space-sm) + env(safe-area-inset-bottom));
   left: 50%;
   z-index: 3;
+  max-width: min(92vw, 28rem);
   margin: 0;
   padding: var(--space-xs) var(--space-md);
-  border: 2px solid rgba(255, 255, 255, 0.85);
+  border: 3px solid color-mix(in srgb, var(--color-border) 50%, white);
   border-radius: var(--radius-full);
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 2px 2px 0 rgba(92, 77, 130, 0.1);
+  background: color-mix(in srgb, var(--color-surface-solid) 94%, white);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-text-heading) 18%, transparent);
   color: var(--color-text-heading);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-xs);
   line-height: 1.2;
+  letter-spacing: 0.04em;
   text-align: center;
   transform: translateX(-50%);
   pointer-events: none;
 
   &--spectate {
-    border-color: color-mix(in srgb, var(--color-accent) 35%, white);
-    background: color-mix(in srgb, var(--color-accent) 16%, white);
+    border-color: color-mix(in srgb, var(--color-accent) 45%, white);
+    background: color-mix(in srgb, var(--color-accent) 22%, white);
+    box-shadow: 3px 3px 0 color-mix(in srgb, var(--color-accent) 30%, transparent);
+    font-size: var(--font-size-sm);
   }
 }
 </style>

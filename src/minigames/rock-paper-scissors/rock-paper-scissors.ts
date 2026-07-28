@@ -4,7 +4,7 @@ export type RpsPhase = 'roaming' | 'focus' | 'reveal' | 'crownAward' | 'finished
 
 export type RpsOutcome = 'win' | 'lose' | 'tie';
 
-export const ROAMING_DURATION_MS = 8000;
+export const ROAMING_DURATION_MS = 15000;
 export const FOCUS_DURATION_MS = 2200;
 export const REVEAL_DURATION_MS = 2800;
 export const CROWN_AWARD_DURATION_MS = 3400;
