@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { partyAudio } from '@/common/audio/party-audio';
 import { getBumpCornerSpawn } from '@/common/arena/bump-physics';
@@ -39,6 +39,10 @@ let chargeQueued = false;
 let chargeAim: { x: number; z: number } | null = null;
 let pumpRafId = 0;
 let lastHeardHitSerial = 0;
+let finishFxHideTimer = 0;
+
+const finishFxVisible = ref(false);
+const finishFxAttackerName = ref('');
 
 watch(
   () => props.snapshot.hitSerial,
@@ -48,8 +52,26 @@ watch(
     }
 
     lastHeardHitSerial = serial;
-    const hasChargeHit = props.snapshot.hits.some((hit) => hit.kind === 'charge');
+    const hasFinisher = props.snapshot.hits.some((hit) => hit.kind === 'finisher');
+    const hasChargeHit = props.snapshot.hits.some(
+      (hit) => hit.kind === 'charge' || hit.kind === 'finisher',
+    );
     partyAudio.playSfx(hasChargeHit ? 'impactHeavy' : 'impact');
+
+    if (!hasFinisher) {
+      return;
+    }
+
+    const finishHit = props.snapshot.hits.find((hit) => hit.kind === 'finisher');
+    const attacker = finishHit
+      ? partyStore.participants.find((entry) => entry.id === finishHit.attackerId)
+      : undefined;
+    finishFxAttackerName.value = attacker?.displayName ?? '';
+    finishFxVisible.value = true;
+    window.clearTimeout(finishFxHideTimer);
+    finishFxHideTimer = window.setTimeout(() => {
+      finishFxVisible.value = false;
+    }, 1600);
   },
 );
 
@@ -329,6 +351,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('keyup', onKeyUp);
   window.cancelAnimationFrame(pumpRafId);
+  window.clearTimeout(finishFxHideTimer);
   chargeAim = null;
   emit('arena', {
     x: 0,
@@ -492,6 +515,29 @@ onBeforeUnmount(() => {
       >
         {{ arenaBumpCopy.spectateHint }}
       </p>
+
+      <div
+        v-if="finishFxVisible && !showCrownCeremony"
+        class="arena-bump-play__finish-fx font-game game-chrome"
+        aria-live="polite"
+      >
+        <span
+          class="arena-bump-play__finish-fx-star"
+          aria-hidden="true"
+        >★</span>
+        <div class="arena-bump-play__finish-fx-body">
+          <span class="arena-bump-play__finish-fx-stamp">{{ arenaBumpCopy.finishBlowStamp }}</span>
+          <span
+            v-if="finishFxAttackerName"
+            class="arena-bump-play__finish-fx-name"
+          >{{ finishFxAttackerName }}</span>
+          <span class="arena-bump-play__finish-fx-cue">{{ arenaBumpCopy.finishBlowCue }}</span>
+        </div>
+        <span
+          class="arena-bump-play__finish-fx-star arena-bump-play__finish-fx-star--flip"
+          aria-hidden="true"
+        >★</span>
+      </div>
 
       <div
         v-if="showCrownCeremony"
@@ -1179,6 +1225,125 @@ onBeforeUnmount(() => {
   to {
     opacity: 1;
     transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.arena-bump-play__finish-fx {
+  position: absolute;
+  top: 42%;
+  left: 50%;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  animation: arena-bump-finish-fx 1.5s cubic-bezier(0.22, 1.45, 0.36, 1) both;
+}
+
+.arena-bump-play__finish-fx-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.arena-bump-play__finish-fx-stamp,
+.arena-bump-play__finish-fx-name,
+.arena-bump-play__finish-fx-cue {
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.08em;
+  -webkit-text-stroke: 1px var(--color-on-accent);
+  paint-order: stroke fill;
+  text-shadow:
+    3px 3px 0 var(--color-bg),
+    -2px -2px 0 var(--color-on-accent),
+    2px -2px 0 var(--color-on-accent),
+    -2px 2px 0 var(--color-on-accent),
+    2px 2px 0 var(--color-on-accent);
+}
+
+.arena-bump-play__finish-fx-stamp {
+  color: var(--color-accent);
+  font-size: clamp(var(--font-size-2xl), 8vw, 3.2rem);
+  line-height: 1;
+  animation: arena-bump-finish-wobble 0.85s ease-in-out 0.35s infinite;
+}
+
+.arena-bump-play__finish-fx-name {
+  color: var(--color-text-heading);
+  font-size: var(--font-size-lg);
+}
+
+.arena-bump-play__finish-fx-cue {
+  color: var(--color-warning);
+  font-size: var(--font-size-lg);
+  animation: arena-bump-finish-cue 0.7s ease-in-out 0.45s infinite;
+}
+
+.arena-bump-play__finish-fx-star {
+  color: var(--color-warning);
+  font-size: var(--font-size-2xl);
+  animation: arena-bump-finish-star 0.85s ease-in-out infinite;
+
+  &--flip {
+    animation-delay: 0.12s;
+    animation-direction: reverse;
+  }
+}
+
+@keyframes arena-bump-finish-fx {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -40%) scale(0.35) rotate(-10deg);
+  }
+
+  18% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.22) rotate(4deg);
+  }
+
+  32% {
+    transform: translate(-50%, -50%) scale(0.94) rotate(-2deg);
+  }
+
+  48%,
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1) rotate(0deg);
+  }
+}
+
+@keyframes arena-bump-finish-wobble {
+  0%,
+  100% {
+    transform: rotate(-2deg) scale(1);
+  }
+
+  50% {
+    transform: rotate(2deg) scale(1.04);
+  }
+}
+
+@keyframes arena-bump-finish-cue {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes arena-bump-finish-star {
+  0%,
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
+
+  50% {
+    transform: scale(1.25) rotate(18deg);
   }
 }
 

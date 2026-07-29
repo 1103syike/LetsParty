@@ -53,6 +53,7 @@ let ceremonyCameraFromAlpha = 0;
 let ceremonyCameraFromBeta = 0;
 let ceremonyCameraFromRadius = 0;
 let cameraShakeUntilMs = 0;
+let cameraShakeDurationMs = 280;
 let cameraShakeStrength = 0;
 const cameraShakeOffset = new Vector3(0, 0, 0);
 /** 對戰中鎖定在本機動物開局面向背後 */
@@ -176,19 +177,34 @@ function playHitEffects(snapshot: ArenaBumpSnapshot): void {
 
   lastHitSerial = snapshot.hitSerial;
 
+  let shakeDuration = 0;
+  let shakeStrength = 0;
+
   for (const hit of snapshot.hits) {
     const attacker = actors.get(hit.attackerId);
     const participant = partyStore.participants.find((entry) => entry.id === hit.attackerId);
     hitFx?.playHit(hit, attacker, participant?.color ?? 'player-1');
 
-    if (hit.kind === 'charge') {
-      cameraShakeUntilMs = performance.now() + 280;
-      cameraShakeStrength = 0.22;
+    if (hit.kind === 'finisher') {
+      shakeDuration = Math.max(shakeDuration, 720);
+      shakeStrength = Math.max(shakeStrength, 0.68);
+    } else if (hit.kind === 'charge') {
+      shakeDuration = Math.max(shakeDuration, 420);
+      shakeStrength = Math.max(shakeStrength, 0.4);
+    } else {
+      shakeDuration = Math.max(shakeDuration, 220);
+      shakeStrength = Math.max(shakeStrength, 0.16);
     }
 
     if (attacker && locomotions.get(hit.attackerId) !== 'fallen') {
       locomotions.set(hit.attackerId, 'attack');
     }
+  }
+
+  if (shakeDuration > 0) {
+    cameraShakeUntilMs = performance.now() + shakeDuration;
+    cameraShakeDurationMs = shakeDuration;
+    cameraShakeStrength = shakeStrength;
   }
 }
 
@@ -211,11 +227,11 @@ function updateCameraShake(): void {
     return;
   }
 
-  const t = (cameraShakeUntilMs - now) / 280;
+  const t = (cameraShakeUntilMs - now) / Math.max(1, cameraShakeDurationMs);
   const strength = cameraShakeStrength * t;
   cameraShakeOffset.set(
     (Math.random() - 0.5) * strength,
-    (Math.random() - 0.5) * strength * 0.45,
+    (Math.random() - 0.5) * strength * 0.5,
     (Math.random() - 0.5) * strength,
   );
   orbitCamera.target.addInPlace(cameraShakeOffset);

@@ -55,6 +55,8 @@ export class ArenaBumpHitFx {
 
   private flashUntilMs = 0;
 
+  private flashLifeMs = 420;
+
   private dotTexture: Texture | null = null;
 
   private starTexture: Texture | null = null;
@@ -74,10 +76,13 @@ export class ArenaBumpHitFx {
   ): void {
     const colorHex = PLAYER_COLOR_HEX[attackerColor] ?? '#9b7fd4';
 
-    if (hit.kind === 'charge') {
+    if (hit.kind === 'finisher') {
+      this.playFinisher(hit.x, hit.z, colorHex);
+    } else if (hit.kind === 'charge') {
       this.playSuperKick(hit.x, hit.z, colorHex);
     } else {
-      this.spawnBurst(hit.x, hit.z, colorHex, 36, 0.55);
+      this.spawnBurst(hit.x, hit.z, colorHex, 52, 0.6);
+      this.spawnShockRing(hit.x, hit.z, colorHex, 0.9, 360);
     }
 
     if (!attacker) {
@@ -85,10 +90,12 @@ export class ArenaBumpHitFx {
     }
 
     attacker.playAttack();
-    this.attackLockUntil.set(
-      hit.attackerId,
-      performance.now() + (hit.kind === 'charge' ? 720 : 320),
-    );
+    const lockMs = hit.kind === 'finisher'
+      ? 980
+      : hit.kind === 'charge'
+        ? 780
+        : 360;
+    this.attackLockUntil.set(hit.attackerId, performance.now() + lockMs);
   }
 
   update(): void {
@@ -98,9 +105,9 @@ export class ArenaBumpHitFx {
       if (now >= this.flashUntilMs) {
         this.flashMesh.setEnabled(false);
       } else {
-        const t = (this.flashUntilMs - now) / 420;
-        this.flashMat.alpha = 0.7 * t;
-        this.flashMesh.scaling.setAll(1.4 + (1 - t) * 4.2);
+        const t = (this.flashUntilMs - now) / Math.max(1, this.flashLifeMs);
+        this.flashMat.alpha = 0.82 * t;
+        this.flashMesh.scaling.setAll(1.4 + (1 - t) * 5.2);
       }
     }
 
@@ -115,12 +122,12 @@ export class ArenaBumpHitFx {
         continue;
       }
 
-      const scale = 0.6 + t * 5.5;
+      const scale = 0.55 + t * 7.2;
       ring.mesh.scaling.setAll(scale);
       const mat = ring.mesh.material;
 
       if (mat instanceof StandardMaterial) {
-        mat.alpha = 0.85 * (1 - t);
+        mat.alpha = 0.9 * (1 - t);
       }
     }
   }
@@ -147,11 +154,37 @@ export class ArenaBumpHitFx {
     this.starTexture = null;
   }
 
+  private playFinisher(x: number, z: number, colorHex: string): void {
+    this.spawnBurst(x, z, colorHex, 140, 0.95);
+    this.spawnBurst(x, z, '#fff4c2', 72, 1.25);
+    this.spawnStarBurst(x, z, colorHex, 96);
+    this.spawnShockRing(x, z, colorHex, 1.55, 720);
+    this.spawnShockRing(x, z, '#ffe566', 1.05, 560);
+    this.showFlash(x, z, colorHex, 1.9, 620);
+
+    window.setTimeout(() => {
+      if (this.scene.isDisposed) {
+        return;
+      }
+
+      this.spawnBurst(x, z, '#ffe566', 64, 1.35);
+      this.spawnStarBurst(x, z, '#ffe566', 48);
+    }, 80);
+
+    window.setTimeout(() => {
+      if (this.scene.isDisposed) {
+        return;
+      }
+
+      this.spawnBurst(x, z, colorHex, 40, 1.1);
+    }, 160);
+  }
+
   private playSuperKick(x: number, z: number, colorHex: string): void {
-    this.spawnBurst(x, z, colorHex, 96, 0.85);
-    this.spawnStarBurst(x, z, colorHex);
-    this.spawnShockRing(x, z, colorHex);
-    this.showFlash(x, z, colorHex);
+    this.spawnBurst(x, z, colorHex, 110, 0.9);
+    this.spawnStarBurst(x, z, colorHex, 72);
+    this.spawnShockRing(x, z, colorHex, 1.25, 540);
+    this.showFlash(x, z, colorHex, 1.55, 480);
 
     // 第二波延遲小爆，像連擊火花
     window.setTimeout(() => {
@@ -159,11 +192,17 @@ export class ArenaBumpHitFx {
         return;
       }
 
-      this.spawnBurst(x, z, '#ffe566', 48, 1.1);
-    }, 90);
+      this.spawnBurst(x, z, '#ffe566', 56, 1.15);
+    }, 70);
   }
 
-  private showFlash(x: number, z: number, colorHex: string): void {
+  private showFlash(
+    x: number,
+    z: number,
+    colorHex: string,
+    scale = 1.4,
+    lifeMs = 420,
+  ): void {
     if (!this.flashMesh || !this.flashMat) {
       this.flashMesh = MeshBuilder.CreateDisc(
         'arena-kick-flash',
@@ -183,16 +222,23 @@ export class ArenaBumpHitFx {
     this.flashMat.diffuseColor = accent;
     this.flashMat.emissiveColor = Color3.FromHexString('#ffe566').scale(0.65).add(accent.scale(0.35));
     this.flashMesh.position.set(x, 0.06, z);
-    this.flashMesh.scaling.setAll(1.4);
-    this.flashMat.alpha = 0.7;
+    this.flashMesh.scaling.setAll(scale);
+    this.flashMat.alpha = 0.82;
     this.flashMesh.setEnabled(true);
-    this.flashUntilMs = performance.now() + 420;
+    this.flashLifeMs = lifeMs;
+    this.flashUntilMs = performance.now() + lifeMs;
   }
 
-  private spawnShockRing(x: number, z: number, colorHex: string): void {
+  private spawnShockRing(
+    x: number,
+    z: number,
+    colorHex: string,
+    diameter = 1.2,
+    lifeMs = 480,
+  ): void {
     const mesh = MeshBuilder.CreateTorus(
       `arena-kick-ring-${this.shockRings.length}`,
-      { diameter: 1.2, thickness: 0.12, tessellation: 48 },
+      { diameter, thickness: diameter > 1.3 ? 0.16 : 0.12, tessellation: 48 },
       this.scene,
     );
     mesh.rotation.x = Math.PI / 2;
@@ -204,21 +250,21 @@ export class ArenaBumpHitFx {
     mat.emissiveColor = Color3.FromHexString(colorHex);
     mat.specularColor = Color3.Black();
     mat.disableLighting = true;
-    mat.alpha = 0.85;
+    mat.alpha = 0.9;
     mesh.material = mat;
 
     this.shockRings.push({
       mesh,
       bornAt: performance.now(),
-      lifeMs: 480,
+      lifeMs,
     });
   }
 
-  private spawnStarBurst(x: number, z: number, colorHex: string): void {
+  private spawnStarBurst(x: number, z: number, colorHex: string, count = 64): void {
     const texture = this.getStarTexture();
     const system = new ParticleSystem(
       `arena-kick-stars-${this.particles.length}`,
-      64,
+      count,
       this.scene,
     );
     const gold = new Color4(1, 0.9, 0.35, 1);
@@ -231,21 +277,21 @@ export class ArenaBumpHitFx {
     system.color1 = gold;
     system.color2 = accent;
     system.colorDead = new Color4(1, 1, 1, 0);
-    system.minSize = 0.22;
-    system.maxSize = 0.7;
-    system.minLifeTime = 0.25;
-    system.maxLifeTime = 0.65;
+    system.minSize = 0.24;
+    system.maxSize = count >= 80 ? 0.85 : 0.72;
+    system.minLifeTime = 0.28;
+    system.maxLifeTime = 0.72;
     system.emitRate = 0;
-    system.manualEmitCount = 64;
+    system.manualEmitCount = count;
     system.blendMode = ParticleSystem.BLENDMODE_STANDARD;
     system.gravity = new Vector3(0, -3.5, 0);
-    system.direction1 = new Vector3(-5.5, 1.2, -5.5);
-    system.direction2 = new Vector3(5.5, 6.5, 5.5);
-    system.minEmitPower = 4.5;
-    system.maxEmitPower = 11;
+    system.direction1 = new Vector3(-6.2, 1.4, -6.2);
+    system.direction2 = new Vector3(6.2, 7.5, 6.2);
+    system.minEmitPower = 5.2;
+    system.maxEmitPower = 13;
     system.updateSpeed = 0.016;
     system.disposeOnStop = true;
-    system.targetStopDuration = 0.7;
+    system.targetStopDuration = 0.78;
     system.onDisposeObservable.add(() => {
       const index = this.particles.indexOf(system);
 
@@ -276,21 +322,21 @@ export class ArenaBumpHitFx {
     system.color1 = flash;
     system.color2 = accent;
     system.colorDead = new Color4(accent.r, accent.g, accent.b, 0);
-    system.minSize = count >= 80 ? 0.12 : 0.08;
-    system.maxSize = count >= 80 ? 0.55 : 0.28;
-    system.minLifeTime = 0.14;
-    system.maxLifeTime = count >= 80 ? 0.55 : 0.38;
+    system.minSize = count >= 100 ? 0.14 : count >= 80 ? 0.12 : 0.09;
+    system.maxSize = count >= 100 ? 0.7 : count >= 80 ? 0.58 : 0.32;
+    system.minLifeTime = 0.16;
+    system.maxLifeTime = count >= 100 ? 0.7 : count >= 80 ? 0.58 : 0.4;
     system.emitRate = 0;
     system.manualEmitCount = count;
     system.blendMode = ParticleSystem.BLENDMODE_STANDARD;
-    system.gravity = new Vector3(0, -7, 0);
-    system.direction1 = new Vector3(-4.5, 0.8, -4.5);
-    system.direction2 = new Vector3(4.5, 5.5, 4.5);
-    system.minEmitPower = count >= 80 ? 3.8 : 2.4;
-    system.maxEmitPower = count >= 80 ? 10 : 6.5;
+    system.gravity = new Vector3(0, -7.5, 0);
+    system.direction1 = new Vector3(-5.2, 1, -5.2);
+    system.direction2 = new Vector3(5.2, 6.2, 5.2);
+    system.minEmitPower = count >= 100 ? 4.6 : count >= 80 ? 4 : 2.8;
+    system.maxEmitPower = count >= 100 ? 13 : count >= 80 ? 11 : 7.2;
     system.updateSpeed = 0.016;
     system.disposeOnStop = true;
-    system.targetStopDuration = count >= 80 ? 0.65 : 0.45;
+    system.targetStopDuration = count >= 100 ? 0.8 : count >= 80 ? 0.68 : 0.48;
     system.onDisposeObservable.add(() => {
       const index = this.particles.indexOf(system);
 

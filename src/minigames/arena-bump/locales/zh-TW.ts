@@ -1,6 +1,6 @@
 export const arenaBumpCopy = {
   name: '一拳擂台',
-  rules: 'WASD／方向鍵移動。空白跳躍、滑鼠左鍵點目標撞擊！把對手一步步擠下台，最後站著的人獲勝。',
+  rules: 'WASD／方向鍵移動。空白跳躍、滑鼠左鍵點目標撞擊！把對手一步步擠下台；剩兩人時一拳就能打飛對手！',
   loadingIntro:
     '粉彩擂台上比推擠！先把對手往邊緣擠，再用撞擊補刀——最後站著的人才是贏家！',
   loadingTips: [
@@ -9,7 +9,7 @@ export const arenaBumpCopy = {
     'WASD／方向鍵移動，用身體把對手往外推。',
     '空白鍵跳躍，可以躲過對手的撞擊。',
     '滑鼠左鍵點目標撞擊，把人再往外擠一截！',
-    '撞擊是補刀，不是秒殺，通常要推幾次才掉台。',
+    '撞擊平常是補刀；擂台剩兩人時，撞擊會變成最後一擊打飛！',
     '站中心比較安全，被逼到外圈才危險。',
     '靠近邊緣要小心，再被推一下就可能出局。',
     '互相衝撞也能搶站位，別只會點左鍵。',
@@ -30,6 +30,8 @@ export const arenaBumpCopy = {
   skillChargeLabel: '撞擊',
   skillChargeCooldownShort: '冷卻',
   skillChargeCooldownSeconds: '{seconds}',
+  finishBlowStamp: '最後一擊！！',
+  finishBlowCue: '一拳打飛～',
   youFell: '你掉下去了…',
   spectateHint: '觀戰中，等這回合結束',
   winnerBanner: '最後倖存！',

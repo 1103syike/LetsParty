@@ -13,20 +13,27 @@ export const BUMP_FALL_MARGIN = 0.12;
 export const BUMP_SPAWN_EDGE_PADDING = 1.65;
 
 /**
- * 撞擊：推人位移，不是秒殺。
- * 要靠連續推擠把人擠到台邊才掉。
+ * 撞擊：平常是補刀推擠；剩 1v1 時改最後一擊打飛。
  */
-export const BUMP_CHARGE_DURATION_MS = 220;
+export const BUMP_CHARGE_DURATION_MS = 240;
 export const BUMP_CHARGE_COOLDOWN_MS = 2000;
-export const BUMP_CHARGE_SPEED = 9.2;
-export const BUMP_CHARGE_HIT_IMPULSE = 10.5;
+export const BUMP_CHARGE_SPEED = 10.2;
+export const BUMP_CHARGE_HIT_IMPULSE = 13.8;
 /** 衝撞命中當幀直接彈開的距離 */
-export const BUMP_CHARGE_BLAST_POP = 0.65;
+export const BUMP_CHARGE_BLAST_POP = 0.95;
 /** 衝撞判定距離（略大於碰撞半徑，避免穿模漏判） */
 export const BUMP_CHARGE_HIT_RANGE = BUMP_ACTOR_RADIUS * 2.4;
-export const BUMP_CHARGE_STUN_MS = 280;
-/** 命中後往台外追加推力（刻意保守） */
-export const BUMP_CHARGE_OUTWARD_BOOST = 1.6;
+export const BUMP_CHARGE_STUN_MS = 380;
+/** 命中後往台外追加推力 */
+export const BUMP_CHARGE_OUTWARD_BOOST = 2.6;
+
+/** 1v1 最後一擊：保證能甩出擂台 */
+export const BUMP_FINISHER_HIT_IMPULSE = 24;
+export const BUMP_FINISHER_BLAST_POP = 2.4;
+export const BUMP_FINISHER_OUTWARD_BOOST = 10;
+export const BUMP_FINISHER_STUN_MS = 900;
+/** 被最後一擊打中後，這段時間不受邊緣減速 */
+export const BUMP_FINISHER_IGNORE_EDGE_MS = 1000;
 
 /** 近邊緣時削弱往外速度，避免一撞就飛出台 */
 export const BUMP_EDGE_SOFT_RATIO = 0.7;
@@ -64,6 +71,8 @@ export interface BumpBody {
   stunMsLeft: number;
   jumpMsLeft: number;
   jumpCooldownMs: number;
+  /** >0：被最後一擊打飛中，不吃邊緣減速 */
+  finisherIgnoreEdgeMs: number;
 }
 
 export interface CpuBumpIntent {
@@ -78,7 +87,7 @@ export interface BumpHitEvent {
   victimId: string;
   x: number;
   z: number;
-  kind: 'bump' | 'charge';
+  kind: 'bump' | 'charge' | 'finisher';
 }
 
 /** CPU 狀態：滯後模式 + 平滑轉向，避免 1v1 抽搐 */
@@ -156,6 +165,7 @@ export function placeBumpBodiesAtCorners(bodies: BumpBody[]): void {
     body.stunMsLeft = 0;
     body.jumpMsLeft = 0;
     body.jumpCooldownMs = 0;
+    body.finisherIgnoreEdgeMs = 0;
   });
 }
 
@@ -179,6 +189,7 @@ export function createBumpBodies(ids: string[]): BumpBody[] {
       stunMsLeft: 0,
       jumpMsLeft: 0,
       jumpCooldownMs: 0,
+      finisherIgnoreEdgeMs: 0,
     };
   });
 }
@@ -198,6 +209,10 @@ export function tickBumpSkillTimers(body: BumpBody, deltaMs: number): void {
 
   if (body.stunMsLeft > 0) {
     body.stunMsLeft = Math.max(0, body.stunMsLeft - deltaMs);
+  }
+
+  if (body.finisherIgnoreEdgeMs > 0) {
+    body.finisherIgnoreEdgeMs = Math.max(0, body.finisherIgnoreEdgeMs - deltaMs);
   }
 
   if (body.jumpMsLeft > 0) {
@@ -349,6 +364,8 @@ export function resolveChargeSweeps(
   bodies: BumpBody[],
   hits?: BumpHitEvent[],
 ): void {
+  const isFinisherRound = countAliveBodies(bodies) === 2;
+
   for (const attacker of bodies) {
     if (!attacker.alive || !attacker.isCharging) {
       continue;
@@ -381,7 +398,7 @@ export function resolveChargeSweeps(
         continue;
       }
 
-      resolveChargeHit(attacker, victim, nx, nz, hits);
+      resolveChargeHit(attacker, victim, nx, nz, hits, isFinisherRound);
 
       // 一次衝撞只打一人，避免連鎖吃掉整場
       break;
@@ -394,6 +411,8 @@ export function resolveBumpCollisions(
   bodies: BumpBody[],
   hits?: BumpHitEvent[],
 ): void {
+  const isFinisherRound = countAliveBodies(bodies) === 2;
+
   for (let i = 0; i < bodies.length; i += 1) {
     const a = bodies[i];
 
@@ -431,12 +450,12 @@ export function resolveBumpCollisions(
 
       // 衝撞命中（掃擊沒打到時的補刀）
       if (a.isCharging && !b.isCharging) {
-        resolveChargeHit(a, b, nx, nz, hits);
+        resolveChargeHit(a, b, nx, nz, hits, isFinisherRound);
         continue;
       }
 
       if (b.isCharging && !a.isCharging) {
-        resolveChargeHit(b, a, -nx, -nz, hits);
+        resolveChargeHit(b, a, -nx, -nz, hits, isFinisherRound);
         continue;
       }
 
@@ -534,38 +553,46 @@ function resolveChargeHit(
   dirX: number,
   dirZ: number,
   hits?: BumpHitEvent[],
+  isFinisher = false,
 ): void {
   if (!attacker.isCharging) {
     return;
   }
 
-  pushHit(hits, attacker, victim, 'charge');
+  pushHit(hits, attacker, victim, isFinisher ? 'finisher' : 'charge');
   attacker.isCharging = false;
   attacker.chargeMsLeft = 0;
   // 攻擊者撞實後刹住，自己不要被一起炸飛
   const hitMag = Math.hypot(dirX, dirZ) || 1;
   const hitX = dirX / hitMag;
   const hitZ = dirZ / hitMag;
-  attacker.vx = -hitX * 2.4;
-  attacker.vz = -hitZ * 2.4;
-  attacker.stunMsLeft = Math.max(attacker.stunMsLeft, 140);
+  attacker.vx = -hitX * (isFinisher ? 1.6 : 2.4);
+  attacker.vz = -hitZ * (isFinisher ? 1.6 : 2.4);
+  attacker.stunMsLeft = Math.max(attacker.stunMsLeft, isFinisher ? 220 : 140);
 
   // 踢中：沿撞擊方向炸飛，並往台外再踹一腳
   const victimDist = Math.hypot(victim.x, victim.z) || 1;
   const outX = victim.x / victimDist;
   const outZ = victim.z / victimDist;
-  const knockX = hitX * 0.62 + outX * 0.38;
-  const knockZ = hitZ * 0.62 + outZ * 0.38;
+  // 最後一擊更偏台外，一般撞則偏撞擊方向
+  const outWeight = isFinisher ? 0.55 : 0.38;
+  const hitWeight = 1 - outWeight;
+  const knockX = hitX * hitWeight + outX * outWeight;
+  const knockZ = hitZ * hitWeight + outZ * outWeight;
   applyKnockback(
     victim,
     knockX,
     knockZ,
-    BUMP_CHARGE_HIT_IMPULSE,
-    BUMP_CHARGE_STUN_MS,
-    BUMP_CHARGE_BLAST_POP,
+    isFinisher ? BUMP_FINISHER_HIT_IMPULSE : BUMP_CHARGE_HIT_IMPULSE,
+    isFinisher ? BUMP_FINISHER_STUN_MS : BUMP_CHARGE_STUN_MS,
+    isFinisher ? BUMP_FINISHER_BLAST_POP : BUMP_CHARGE_BLAST_POP,
   );
-  victim.vx += outX * BUMP_CHARGE_OUTWARD_BOOST;
-  victim.vz += outZ * BUMP_CHARGE_OUTWARD_BOOST;
+  victim.vx += outX * (isFinisher ? BUMP_FINISHER_OUTWARD_BOOST : BUMP_CHARGE_OUTWARD_BOOST);
+  victim.vz += outZ * (isFinisher ? BUMP_FINISHER_OUTWARD_BOOST : BUMP_CHARGE_OUTWARD_BOOST);
+
+  if (isFinisher) {
+    victim.finisherIgnoreEdgeMs = BUMP_FINISHER_IGNORE_EDGE_MS;
+  }
 }
 
 /** 近邊緣削掉往外速度，讓出局要靠連續推擠 */
@@ -573,7 +600,7 @@ export function applyBumpEdgeSafety(bodies: BumpBody[]): void {
   const soft = BUMP_STAGE_RADIUS * BUMP_EDGE_SOFT_RATIO;
 
   for (const body of bodies) {
-    if (!body.alive || body.isCharging) {
+    if (!body.alive || body.isCharging || body.finisherIgnoreEdgeMs > 0) {
       continue;
     }
 
