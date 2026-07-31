@@ -1,8 +1,9 @@
 export const volleyballCopy = {
   name: '沙灘排球',
-  rules: '隨機 2v2 搶 5 分。對方場地左鍵擊球、右鍵殺球；己方場地左鍵舉給隊友。WASD 移動，空白跳。',
+  rules:
+    '隨機 2v2，先到 5 分且須領先 2 分。得分方發球，拿回發球權換隊友發。對方場地左鍵擊球、右鍵殺球；己方場地左鍵舉給隊友。WASD 移動，空白跳。',
   loadingIntro:
-    '陽光沙灘、棒棒糖樹，四隻小動物分成紅藍兩隊！看準時機擊球、舉球、殺球，先搶到 5 分的隊伍勝出！',
+    '陽光沙灘、棒棒糖樹，四隻小動物分成紅藍兩隊！看準時機擊球、舉球、殺球，先到 5 分且領先兩分的隊伍勝出！',
   loadingTips: [
     '陽光沙灘球場，四隻動物分成紅藍兩隊！',
     '這是 2v2 對抗，跟隊友並肩作戰。',
@@ -14,7 +15,8 @@ export const volleyballCopy = {
     '隊友舉好球時，就是你右鍵殺球的好時機。',
     '粉圈是對方落點，綠圈是己方落點提示。',
     '注意球權提示：輪到你接球要跟上！',
-    '先搶到 5 分的隊伍獲勝。',
+    '得分方下回發球；拿回發球權會換成隊友發。',
+    '先到 5 分且領先 2 分才算贏（例如 5-3；5-4 續打）。',
     '勝利隊伍拿皇冠，沙灘上繼續狂歡！',
   ],
   scoreboardTitle: '積分榜',
@@ -22,6 +24,9 @@ export const volleyballCopy = {
   localPlayerTag: '你',
   teamA: '紅方',
   teamB: '藍方',
+  teamRevealTitle: '分隊揭曉！！',
+  teamRevealVs: 'VS',
+  teamRevealGo: '開戰！',
   goalsLabel: '進球',
   controlsTitle: '操作',
   skillMove: 'WASD 移動',
@@ -31,6 +36,9 @@ export const volleyballCopy = {
   skillSpike: '右鍵對方場 · 殺球',
   skillAim: '粉圈對方／綠圈己方',
   serveHint: '發球！靠近球，左鍵點對方場',
+  serveHintTeammate: '隊友發球中…',
+  serveHintOpponent: '對方發球',
+  serveTag: '發',
   rallyHint: '左鍵擊球 · 右鍵殺球',
   redScored: '紅方得分！',
   blueScored: '藍方得分！',
@@ -65,7 +73,7 @@ export const volleyballCopy = {
   /** 殺球出手 */
   spikeSwingCallout: '殺球！！',
   spikeSwingCue: '砸下去～',
-  /** 賽點（差 1 分即將贏） */
+  /** 賽點（再得一分即可贏） */
   matchPointCallout: '賽點！！',
   matchPointCue: '決一勝負～',
   matchPointRed: '紅方賽點',

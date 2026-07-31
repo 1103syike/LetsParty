@@ -1,5 +1,7 @@
 import { ARENA_BUMP_ID } from '@/minigames/arena-bump/arena-bump-id';
 import { arenaBumpCopy } from '@/minigames/arena-bump/locales/zh-TW';
+import { BOUNCY_BOMB_ID } from '@/minigames/bouncy-bomb/bouncy-bomb-id';
+import { bouncyBombCopy } from '@/minigames/bouncy-bomb/locales/zh-TW';
 import { ROCK_PAPER_SCISSORS_ID } from '@/minigames/rock-paper-scissors';
 import { rpsCopy } from '@/minigames/rock-paper-scissors/locales/zh-TW';
 import { volleyballCopy } from '@/minigames/volleyball/locales/zh-TW';
@@ -47,6 +49,11 @@ const BY_ID: Record<string, MiniGameLoadingContent> = {
     name: volleyballCopy.name,
     intro: volleyballCopy.loadingIntro,
     slides: buildSlides('volleyball', volleyballCopy.loadingTips),
+  },
+  [BOUNCY_BOMB_ID]: {
+    name: bouncyBombCopy.name,
+    intro: bouncyBombCopy.loadingIntro,
+    slides: buildSlides('bouncy-bomb', bouncyBombCopy.loadingTips),
   },
 };
 

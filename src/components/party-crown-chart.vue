@@ -17,8 +17,11 @@ const CHART_HEIGHT = 196;
 const PADDING = { top: 22, right: 36, bottom: 30, left: 28 };
 /** 一格（一回合）畫完要多久，瑪利歐派對感 */
 const SEGMENT_DURATION_MS = 580;
-const STACK_GAP_Y = 16;
-const STACK_GAP_X = 10;
+/** 頭像垂直最小間距（約一顆頭） */
+const MIN_SEP_Y = 18;
+/** 過近時水平略扇出，避免完全重疊 */
+const FAN_SEP_X = 6;
+const SOFT_SEP_PASSES = 3;
 
 interface ChartTip {
   participant: Participant;
@@ -30,6 +33,16 @@ interface ChartTip {
 const animProgress = ref(0);
 let rafId: number | null = null;
 let animStartedAt = 0;
+
+const seatOrder = computed(() => {
+  const order = new Map<string, number>();
+
+  props.participants.forEach((participant, index) => {
+    order.set(participant.id, index);
+  });
+
+  return order;
+});
 
 const roundCount = computed(() => getCrownHistoryRoundCount(props.crownHistory));
 
@@ -55,10 +68,10 @@ const xLabels = computed(() => {
   return labels;
 });
 
-/** 帶錯開後的線尾大頭照位置 */
+/** 線尖黏錨點後，過近再軟推開 */
 const tipMarkers = computed(() => {
   const rawTips = props.participants.map((participant) => tipFor(participant));
-  return applyStackOffsets(rawTips);
+  return applySoftSeparation(rawTips);
 });
 
 function playerColor(color: Participant['color']): string {
@@ -126,34 +139,90 @@ function tipFor(participant: Participant): ChartTip {
   };
 }
 
-/** 同高度線尾錯開，避免大頭照疊成一團 */
-function applyStackOffsets(tips: ChartTip[]): ChartTip[] {
-  const buckets = new Map<string, ChartTip[]>();
-
-  for (const tip of tips) {
-    const key = `${Math.round(tip.y / 6)}_${Math.round(tip.x / 8)}`;
-    const bucket = buckets.get(key) ?? [];
-    bucket.push(tip);
-    buckets.set(key, bucket);
+function compareTipOrder(left: ChartTip, right: ChartTip): number {
+  // 皇冠多 → 圖上較高（y 較小）；同分用固定座位序，避免互搶
+  if (Math.abs(left.crowns - right.crowns) > 0.001) {
+    return right.crowns - left.crowns;
   }
 
-  const result: ChartTip[] = [];
+  return (seatOrder.value.get(left.participant.id) ?? 0)
+    - (seatOrder.value.get(right.participant.id) ?? 0);
+}
 
-  for (const bucket of buckets.values()) {
-    bucket.sort((left, right) => left.participant.id.localeCompare(right.participant.id));
-    const mid = (bucket.length - 1) / 2;
-
-    bucket.forEach((tip, index) => {
-      const stack = index - mid;
-      result.push({
-        ...tip,
-        x: tip.x + stack * STACK_GAP_X,
-        y: tip.y + stack * STACK_GAP_Y,
-      });
-    });
+/**
+ * 黏在真實線尖上；兩頭像垂直過近才對半推開。
+ * 連續、無分桶，不會因進錯組瞬移。
+ */
+function applySoftSeparation(tips: ChartTip[]): ChartTip[] {
+  if (tips.length <= 1) {
+    return tips;
   }
 
-  return result.sort((left, right) => left.participant.id.localeCompare(right.participant.id));
+  const items = tips.map((tip) => ({
+    tip,
+    x: tip.x,
+    y: tip.y,
+  }));
+
+  items.sort((left, right) => compareTipOrder(left.tip, right.tip));
+
+  for (let pass = 0; pass < SOFT_SEP_PASSES; pass += 1) {
+    for (let i = 0; i < items.length; i += 1) {
+      for (let j = i + 1; j < items.length; j += 1) {
+        const upper = items[i]!;
+        const lower = items[j]!;
+        const gap = lower.y - upper.y;
+
+        if (gap >= MIN_SEP_Y) {
+          continue;
+        }
+
+        const push = (MIN_SEP_Y - gap) * 0.5;
+        upper.y -= push;
+        lower.y += push;
+      }
+    }
+  }
+
+  // 同分簇：依排序一次水平扇出（不進迭代，避免累加飄走）
+  let clusterStart = 0;
+
+  while (clusterStart < items.length) {
+    let clusterEnd = clusterStart + 1;
+
+    while (
+      clusterEnd < items.length
+      && Math.abs(items[clusterEnd]!.tip.crowns - items[clusterStart]!.tip.crowns) < 0.05
+    ) {
+      clusterEnd += 1;
+    }
+
+    const count = clusterEnd - clusterStart;
+
+    if (count > 1) {
+      const mid = (count - 1) / 2;
+
+      for (let index = 0; index < count; index += 1) {
+        items[clusterStart + index]!.x += (index - mid) * FAN_SEP_X;
+      }
+    }
+
+    clusterStart = clusterEnd;
+  }
+
+  const chartTop = PADDING.top;
+  const chartBottom = CHART_HEIGHT - PADDING.bottom;
+
+  return items
+    .map((item) => ({
+      ...item.tip,
+      x: item.x,
+      y: Math.min(chartBottom, Math.max(chartTop, item.y)),
+    }))
+    .sort((left, right) =>
+      (seatOrder.value.get(left.participant.id) ?? 0)
+      - (seatOrder.value.get(right.participant.id) ?? 0),
+    );
 }
 
 function polylinePoints(participantId: string): string {

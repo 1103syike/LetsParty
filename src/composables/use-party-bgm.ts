@@ -2,6 +2,7 @@ import { onUnmounted, watch, type Ref } from 'vue';
 
 import { partyAudio, type PartyBgmId } from '@/common/audio/party-audio';
 import { ARENA_BUMP_ID } from '@/minigames/arena-bump/arena-bump-id';
+import { BOUNCY_BOMB_ID } from '@/minigames/bouncy-bomb/bouncy-bomb-id';
 import { ROCK_PAPER_SCISSORS_ID } from '@/minigames/rock-paper-scissors';
 import { VOLLEYBALL_ID } from '@/minigames/volleyball/volleyball-id';
 import type { PartyMachinePhase } from '@/party/party-machine/party-machine';
@@ -17,6 +18,10 @@ function resolvePlayBgm(gameId: string | null): PartyBgmId {
 
   if (gameId === VOLLEYBALL_ID) {
     return 'volleyball';
+  }
+
+  if (gameId === BOUNCY_BOMB_ID) {
+    return 'arena';
   }
 
   return 'lobby';

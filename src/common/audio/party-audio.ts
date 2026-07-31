@@ -10,7 +10,10 @@ export type PartySfxId =
   | 'hitBallAlt'
   | 'out'
   | 'victory'
-  | 'victoryAlt';
+  | 'victoryAlt'
+  | 'bombThrow'
+  | 'bombExplode'
+  | 'respawn';
 
 export type PartyBgmId = 'lobby' | 'loading' | 'rps' | 'arena' | 'volleyball';
 
@@ -25,6 +28,10 @@ const SFX_SRC: Record<PartySfxId, string> = {
   out: '/audio/sfx/out.ogg',
   victory: '/audio/sfx/victory.ogg',
   victoryAlt: '/audio/sfx/victory-alt.ogg',
+  // 暫用既有音效；之後可換專用檔
+  bombThrow: '/audio/sfx/hit-ball.ogg',
+  bombExplode: '/audio/sfx/impact-heavy.ogg',
+  respawn: '/audio/sfx/click-confirm.ogg',
 };
 
 const BGM_SRC: Record<PartyBgmId, string> = {

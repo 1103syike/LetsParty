@@ -11,7 +11,8 @@ export interface MiniGameInstance {
   getRankings(): string[];
   getCrownAwards?(rankings: string[]): Record<string, number>;
   getRoundResults?(): Record<string, string>;
-  getGameSnapshot?(): unknown;
+  /** viewerId：連線時依觀看者組個人化 local 欄位；省略則用本機玩家 */
+  getGameSnapshot?(viewerId?: string | null): unknown;
   dispose(): void;
   isFinished(): boolean;
   getScores?(): Record<string, number>;

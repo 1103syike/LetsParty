@@ -10,12 +10,32 @@ import {
 
 import type { AnimalActor } from '@/common/animals/animal-actor';
 
-/** 甩飛到台外落地時間（結算延遲會加上這段） */
-export const ARENA_BUMP_FALL_DURATION_MS = 720;
-/** 水平飛出距離（台緣再往外，落到草／水邊） */
-const OUTWARD_DISTANCE = 2.8;
-/** 拋物線最高點 */
-const ARC_PEAK_Y = 1.85;
+/** 甩飛到落地時間（結算延遲會加上這段；單次可覆寫） */
+export const ACTOR_KNOCKBACK_FALL_DURATION_MS = 720;
+
+/** @deprecated 相容舊名稱 */
+export const ARENA_BUMP_FALL_DURATION_MS = ACTOR_KNOCKBACK_FALL_DURATION_MS;
+
+export interface KnockbackFallOptions {
+  /** 水平飛出距離 */
+  outwardDistance?: number;
+  /** 拋物線最高點 */
+  arcPeakY?: number;
+  /** 飛出方向（世界 xz）；沒給則從原點往外 */
+  dirX?: number;
+  dirZ?: number;
+  /** 飛行時長（毫秒） */
+  durationMs?: number;
+  /** 空中翻轉圈數（星星式） */
+  spinRevolutions?: number;
+  /** 落地後隱藏（飛出場外用） */
+  hideOnLand?: boolean;
+}
+
+const DEFAULT_OUTWARD_DISTANCE = 2.8;
+const DEFAULT_ARC_PEAK_Y = 1.85;
+const DEFAULT_SPIN_REVOLUTIONS = 0.425;
+
 const PLAYER_COLOR_HEX: Record<string, string> = {
   'player-1': '#e86b8a',
   'player-2': '#9b7fd4',
@@ -34,6 +54,11 @@ interface FallDrop {
   spinSign: number;
   trail: ParticleSystem;
   landed: boolean;
+  outwardDistance: number;
+  arcPeakY: number;
+  durationMs: number;
+  spinRevolutions: number;
+  hideOnLand: boolean;
 }
 
 function hexToColor4(hex: string, alpha = 1): Color4 {
@@ -48,26 +73,34 @@ function hexToColor4(hex: string, alpha = 1): Color4 {
   );
 }
 
-/** y：起點 → 拋物線 → 落地 y=0 */
-function flightHeight(startY: number, t: number): number {
-  const peakLift = (ARC_PEAK_Y - startY) * 4 * t * (1 - t);
+function flightHeight(startY: number, t: number, arcPeakY: number): number {
+  const peakLift = (arcPeakY - startY) * 4 * t * (1 - t);
   return startY * (1 - t) + peakLift;
 }
 
-/** 掉落演出：拋物線甩飛 → 台外趴地 */
-export class ArenaBumpFallFx {
+/** 掉落演出：拋物線甩飛 → 趴地 */
+export class ActorKnockbackFallFx {
   private readonly scene: Scene;
 
   private readonly drops = new Map<string, FallDrop>();
 
   private readonly particles: ParticleSystem[] = [];
 
+  private readonly defaultOptions: {
+    outwardDistance: number;
+    arcPeakY: number;
+  };
+
   private dotTexture: Texture | null = null;
 
   private observer: Observer<Scene> | null = null;
 
-  constructor(scene: Scene) {
+  constructor(scene: Scene, options: KnockbackFallOptions = {}) {
     this.scene = scene;
+    this.defaultOptions = {
+      outwardDistance: options.outwardDistance ?? DEFAULT_OUTWARD_DISTANCE,
+      arcPeakY: options.arcPeakY ?? DEFAULT_ARC_PEAK_Y,
+    };
     this.observer = scene.onBeforeRenderObservable.add(() => {
       this.tick(scene.getEngine().getDeltaTime());
     });
@@ -87,18 +120,61 @@ export class ArenaBumpFallFx {
     this.drops.clear();
   }
 
-  beginFall(fighterId: string, actor: AnimalActor, playerColor: string): void {
-    if (this.drops.has(fighterId)) {
+  /** 重生後清掉落地狀態，允許再次甩飛 */
+  clearActor(fighterId: string): void {
+    const drop = this.drops.get(fighterId);
+
+    if (!drop) {
       return;
+    }
+
+    if (!drop.landed) {
+      this.disposeTrail(drop.trail);
+    }
+
+    this.drops.delete(fighterId);
+  }
+
+  beginFall(
+    fighterId: string,
+    actor: AnimalActor,
+    playerColor: string,
+    options: KnockbackFallOptions = {},
+  ): void {
+    const existing = this.drops.get(fighterId);
+
+    if (existing && !existing.landed) {
+      return;
+    }
+
+    if (existing) {
+      this.clearActor(fighterId);
     }
 
     const startX = actor.root.position.x;
     const startY = Math.max(0, actor.root.position.y);
     const startZ = actor.root.position.z;
-    const dist = Math.hypot(startX, startZ) || 1;
-    const outX = startX / dist;
-    const outZ = startZ / dist;
+    const customDir = options.dirX != null && options.dirZ != null
+      ? Math.hypot(options.dirX, options.dirZ)
+      : 0;
+    let outX: number;
+    let outZ: number;
+
+    if (customDir > 0.01) {
+      outX = options.dirX! / customDir;
+      outZ = options.dirZ! / customDir;
+    } else {
+      const dist = Math.hypot(startX, startZ) || 1;
+      outX = startX / dist;
+      outZ = startZ / dist;
+    }
+
     const colorHex = PLAYER_COLOR_HEX[playerColor] ?? '#9b7fd4';
+    const outwardDistance = options.outwardDistance ?? this.defaultOptions.outwardDistance;
+    const arcPeakY = options.arcPeakY ?? this.defaultOptions.arcPeakY;
+    const durationMs = options.durationMs ?? ACTOR_KNOCKBACK_FALL_DURATION_MS;
+    const spinRevolutions = options.spinRevolutions ?? DEFAULT_SPIN_REVOLUTIONS;
+    const hideOnLand = options.hideOnLand ?? false;
 
     actor.setSubtreeEnabled(true);
     actor.root.scaling.setAll(1);
@@ -118,6 +194,11 @@ export class ArenaBumpFallFx {
       spinSign: Math.abs(startX + startZ) % 2 === 0 ? 1 : -1,
       trail,
       landed: false,
+      outwardDistance,
+      arcPeakY,
+      durationMs,
+      spinRevolutions,
+      hideOnLand,
     });
   }
 
@@ -145,11 +226,11 @@ export class ArenaBumpFallFx {
       }
 
       drop.elapsedMs += deltaMs;
-      const progress = Math.min(1, drop.elapsedMs / ARENA_BUMP_FALL_DURATION_MS);
-      const outward = OUTWARD_DISTANCE * (1 - (1 - progress) ** 1.55);
-      const height = flightHeight(drop.startY, progress);
-      const tip = progress * 1.1 * drop.spinSign;
-      const tumble = progress * Math.PI * 0.85;
+      const progress = Math.min(1, drop.elapsedMs / drop.durationMs);
+      const outward = drop.outwardDistance * (1 - (1 - progress) ** 1.55);
+      const height = flightHeight(drop.startY, progress, drop.arcPeakY);
+      const tip = progress * Math.PI * 1.4 * drop.spinSign;
+      const tumble = progress * Math.PI * 2 * drop.spinRevolutions;
 
       const x = drop.startX + drop.outX * outward;
       const z = drop.startZ + drop.outZ * outward;
@@ -169,17 +250,22 @@ export class ArenaBumpFallFx {
   }
 
   private finishLanding(drop: FallDrop): void {
-    const x = drop.startX + drop.outX * OUTWARD_DISTANCE;
-    const z = drop.startZ + drop.outZ * OUTWARD_DISTANCE;
+    const x = drop.startX + drop.outX * drop.outwardDistance;
+    const z = drop.startZ + drop.outZ * drop.outwardDistance;
 
     this.disposeTrail(drop.trail);
-    drop.actor.setSubtreeEnabled(true);
     drop.actor.root.scaling.setAll(1);
     drop.actor.root.rotation.x = 0;
     drop.actor.root.rotation.z = 0;
     drop.actor.root.position.set(x, 0, z);
-    // 趴在台外：Death 停最後一幀
-    drop.actor.playFaint();
+
+    if (drop.hideOnLand) {
+      drop.actor.setSubtreeEnabled(false);
+    } else {
+      drop.actor.setSubtreeEnabled(true);
+      drop.actor.playFaint();
+    }
+
     drop.landed = true;
   }
 
@@ -196,7 +282,7 @@ export class ArenaBumpFallFx {
   private createMeteorTrail(actor: AnimalActor, colorHex: string): ParticleSystem {
     const texture = this.getDotTexture();
     const system = new ParticleSystem(
-      `arena-meteor-trail-${this.particles.length}`,
+      `knockback-meteor-trail-${this.particles.length}`,
       96,
       this.scene,
     );
@@ -236,7 +322,11 @@ export class ArenaBumpFallFx {
 
   private spawnEdgeBurst(x: number, z: number, colorHex: string): void {
     const texture = this.getDotTexture();
-    const system = new ParticleSystem(`arena-fall-splash-${this.particles.length}`, 56, this.scene);
+    const system = new ParticleSystem(
+      `knockback-fall-splash-${this.particles.length}`,
+      56,
+      this.scene,
+    );
     const accent = hexToColor4(colorHex, 1);
     const white = new Color4(1, 1, 1, 1);
     const mist = new Color4(1, 0.85, 0.45, 0.9);
@@ -280,7 +370,12 @@ export class ArenaBumpFallFx {
     }
 
     const size = 64;
-    const dynamic = new DynamicTexture('arena-fall-dot', { width: size, height: size }, this.scene, false);
+    const dynamic = new DynamicTexture(
+      'knockback-fall-dot',
+      { width: size, height: size },
+      this.scene,
+      false,
+    );
     const ctx = dynamic.getContext();
     const gradient = ctx.createRadialGradient(size / 2, size / 2, 2, size / 2, size / 2, size / 2);
     gradient.addColorStop(0, 'rgba(255,255,255,1)');
@@ -297,3 +392,6 @@ export class ArenaBumpFallFx {
     return dynamic;
   }
 }
+
+/** @deprecated 相容舊名稱 */
+export const ArenaBumpFallFx = ActorKnockbackFallFx;

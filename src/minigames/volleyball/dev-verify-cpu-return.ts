@@ -13,6 +13,7 @@ const participants: Participant[] = [
     color: 'player-1',
     animalId: 'pig',
     crownCount: 0,
+    isReady: true,
   },
   {
     id: 'cpu-1',
@@ -21,6 +22,7 @@ const participants: Participant[] = [
     color: 'player-2',
     animalId: 'dog',
     crownCount: 0,
+    isReady: true,
   },
   {
     id: 'cpu-2',
@@ -29,6 +31,7 @@ const participants: Participant[] = [
     color: 'player-3',
     animalId: 'chicken',
     crownCount: 0,
+    isReady: true,
   },
   {
     id: 'cpu-3',
@@ -37,6 +40,7 @@ const participants: Participant[] = [
     color: 'player-4',
     animalId: 'sheep',
     crownCount: 0,
+    isReady: true,
   },
 ];
 

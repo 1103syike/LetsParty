@@ -11,6 +11,10 @@ import {
  * glb 放在 public/models/animals/
  *
  * 新增來源：
+ * - pig https://poly.pizza/m/wCm1y9sZqV
+ * - chicken https://poly.pizza/m/2y1fU2XJ3b
+ * - dog https://poly.pizza/m/8VXfVt1Q5y
+ * - sheep https://poly.pizza/m/Y266F8yqMJ
  * - wolf https://poly.pizza/m/XU7oNeKShV
  * - horse https://poly.pizza/m/D3hAeqeDBE
  * - raccoon https://poly.pizza/m/xMmx6VQP3r

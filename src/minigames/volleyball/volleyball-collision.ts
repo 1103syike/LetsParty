@@ -46,7 +46,7 @@ export const VB_HITBOX_Y_MAX_SPIKE_LOCAL = 2.9;
 export const VB_SPIKE_MIN_PLAYER_Y = 0.22;
 
 /** 隊友之間最小距離（避免黏成一團） */
-export const VB_TEAMMATE_SEPARATION = VB_PLAYER_BODY_RADIUS * 2.4;
+export const VB_TEAMMATE_SEPARATION = VB_PLAYER_BODY_RADIUS * 3.2;
 
 export type VbHitKind = 'bump' | 'set' | 'spike';
 

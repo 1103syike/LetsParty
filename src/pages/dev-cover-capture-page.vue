@@ -62,6 +62,7 @@ function buildParticipants(): Participant[] {
     color: colors[index],
     animalId,
     crownCount: index === 0 ? 2 : 1,
+    isReady: true,
   }));
 }
 

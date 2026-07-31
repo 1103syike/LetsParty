@@ -19,13 +19,14 @@ function createCpuParticipant(
     color: PLAYER_COLORS[seatIndex],
     animalId,
     crownCount: 0,
+    isReady: true,
   };
 }
 
 export function fillCpuToFour(participants: Participant[]): Participant[] {
   const filled = [...participants];
   const usedNames = new Set(filled.map((participant) => participant.displayName));
-  let cpuNumber = 1;
+  let cpuNumber = nextCpuNumber(filled);
 
   while (filled.length < PARTY_PLAYER_COUNT) {
     const taken = new Set(filled.map((participant) => participant.animalId));
@@ -54,4 +55,69 @@ export function fillCpuToFour(participants: Participant[]): Participant[] {
       animalId,
     };
   });
+}
+
+/** 保留真人，裁掉多餘 CPU 再補到 4 */
+export function reconcileCpuSeats(participants: Participant[]): Participant[] {
+  const humans = participants.filter((participant) => participant.kind === 'human');
+  const cpus = participants.filter((participant) => participant.kind === 'cpu');
+  const needCpu = Math.max(0, PARTY_PLAYER_COUNT - humans.length);
+  const kept = [...humans, ...cpus.slice(0, needCpu)];
+
+  return fillCpuToFour(kept).map((participant, index) => ({
+    ...participant,
+    color: PLAYER_COLORS[index] ?? participant.color,
+  }));
+}
+
+/** 把真人塞進第一個 CPU 席（或附加再 reconcile） */
+export function seatHumanReplacingCpu(
+  participants: Participant[],
+  human: Participant,
+): Participant[] {
+  const next = [...participants];
+  const cpuIndex = next.findIndex((participant) => participant.kind === 'cpu');
+
+  if (cpuIndex >= 0) {
+    const seatColor = next[cpuIndex]!.color;
+    next[cpuIndex] = {
+      ...human,
+      color: seatColor,
+      crownCount: 0,
+      isReady: human.isReady ?? false,
+    };
+    return reconcileCpuSeats(next);
+  }
+
+  if (next.filter((participant) => participant.kind === 'human').length >= PARTY_PLAYER_COUNT) {
+    return participants;
+  }
+
+  return reconcileCpuSeats([...next, human]);
+}
+
+export function removeHumanById(
+  participants: Participant[],
+  humanId: string,
+): Participant[] {
+  const next = participants.filter((participant) => participant.id !== humanId);
+  return reconcileCpuSeats(next);
+}
+
+function nextCpuNumber(participants: Participant[]): number {
+  let max = 0;
+
+  for (const participant of participants) {
+    if (participant.kind !== 'cpu') {
+      continue;
+    }
+
+    const match = /^cpu-(\d+)$/.exec(participant.id);
+
+    if (match) {
+      max = Math.max(max, Number(match[1]));
+    }
+  }
+
+  return max + 1;
 }

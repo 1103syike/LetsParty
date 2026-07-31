@@ -22,6 +22,8 @@ export interface Participant {
   animalId: AnimalId;
   peerId?: string;
   crownCount: number;
+  /** 大廳準備；CPU 預設 true */
+  isReady: boolean;
 }
 
 export interface PartySettings {

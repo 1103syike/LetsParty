@@ -70,6 +70,8 @@ let ceremonyCameraProgress = 0;
 let ceremonyCameraFromAlpha = 0;
 let ceremonyCameraFromBeta = 0;
 let ceremonyCameraFromRadius = 0;
+/** 分隊揭曉鏡頭：拉遠看全場 */
+let teamRevealCameraActive = false;
 
 /** 漏接派對字：貼在角色畫面座標上 */
 const missPopup = ref<{
@@ -369,6 +371,7 @@ function updateLandMarker(snapshot: VolleyballSnapshot): void {
     || snapshot.phase === 'crownAward'
     || snapshot.phase === 'finished'
     || snapshot.phase === 'pointPause'
+    || snapshot.phase === 'teamReveal'
   ) {
     landMarkerMesh.setEnabled(false);
     hitFx?.sync(null, 0);
@@ -409,7 +412,12 @@ function updateAimMarker(point: { x: number; z: number } | null): void {
     return;
   }
 
-  if (!point || props.snapshot.phase === 'crownAward' || props.snapshot.phase === 'finished') {
+  if (
+    !point
+    || props.snapshot.phase === 'crownAward'
+    || props.snapshot.phase === 'finished'
+    || props.snapshot.phase === 'teamReveal'
+  ) {
     aimMarkerMesh.setEnabled(false);
     return;
   }
@@ -430,7 +438,11 @@ function updateAimMarker(point: { x: number; z: number } | null): void {
 
 function bindCourtPointer(scene: Scene): void {
   pointerObserver = scene.onPointerObservable.add((info) => {
-    if (props.snapshot.phase === 'crownAward' || props.snapshot.phase === 'finished') {
+    if (
+      props.snapshot.phase === 'crownAward'
+      || props.snapshot.phase === 'finished'
+      || props.snapshot.phase === 'teamReveal'
+    ) {
       updateAimMarker(null);
       return;
     }
@@ -535,11 +547,15 @@ function applySnapshot(snapshot: VolleyballSnapshot): void {
   updateLandMarker(snapshot);
 
   if (ballMesh) {
-    ballMesh.position.set(snapshot.ball.x, snapshot.ball.y, snapshot.ball.z);
-    ballMesh.setEnabled(true);
+    if (snapshot.phase === 'teamReveal') {
+      ballMesh.setEnabled(false);
+      syncBallShadow(snapshot.ball, false);
+    } else {
+      ballMesh.position.set(snapshot.ball.x, snapshot.ball.y, snapshot.ball.z);
+      ballMesh.setEnabled(true);
+      syncBallShadow(snapshot.ball, true);
+    }
   }
-
-  syncBallShadow(snapshot.ball, true);
 
   const now = performance.now();
 
@@ -557,6 +573,10 @@ function applySnapshot(snapshot: VolleyballSnapshot): void {
     actor.faceWorldDirection(0, player.facingZ);
 
     if (locomotions.get(player.id) === 'ceremony') {
+      continue;
+    }
+
+    if (snapshot.phase === 'teamReveal') {
       continue;
     }
 
@@ -754,13 +774,87 @@ function updateCeremonyCamera(deltaMs: number): void {
   orbitCamera.radius = ceremonyCameraFromRadius + (cameraPlan.radius - ceremonyCameraFromRadius) * eased;
 }
 
+function beginTeamReveal(snapshot: VolleyballSnapshot): void {
+  if (!orbitCamera) {
+    return;
+  }
+
+  teamRevealCameraActive = true;
+  applyTeamRevealCamera(orbitCamera, snapshot.localTeamId);
+
+  let delay = 0;
+
+  for (const player of snapshot.players) {
+    const actor = actors.get(player.id);
+
+    if (!actor) {
+      continue;
+    }
+
+    actor.setPosition(player.x, player.z);
+    actor.root.position.y = player.y;
+    actor.faceWorldDirection(0, player.facingZ);
+    actor.playPanelPopEntrance(delay);
+    actor.playCelebrate();
+    locomotions.set(player.id, 'ceremony');
+    delay += 90;
+  }
+}
+
+function endTeamReveal(): void {
+  teamRevealCameraActive = false;
+
+  for (const [id, actor] of actors) {
+    actor.resetPanelPop();
+
+    if (locomotions.get(id) === 'ceremony') {
+      actor.playIdle();
+      locomotions.set(id, 'idle');
+    }
+  }
+}
+
+function applyTeamRevealCamera(
+  camera: ArcRotateCamera,
+  localTeamId: VolleyballSnapshot['localTeamId'],
+): void {
+  const alpha = localTeamId === 'b' ? Math.PI / 2 : -Math.PI / 2;
+  const beta = Math.PI / 2.55;
+  const radius = 28;
+
+  camera.inputs.clear();
+  camera.detachControl();
+  camera.setTarget(new Vector3(0, 0.9, 0));
+  camera.alpha = alpha;
+  camera.beta = beta;
+  camera.radius = radius;
+  camera.lowerAlphaLimit = alpha;
+  camera.upperAlphaLimit = alpha;
+  camera.lowerBetaLimit = beta;
+  camera.upperBetaLimit = beta;
+  camera.lowerRadiusLimit = radius;
+  camera.upperRadiusLimit = radius;
+}
+
 function syncPhase(snapshot: VolleyballSnapshot): void {
   if (snapshot.phase === 'crownAward' && lastPhase !== 'crownAward') {
     beginCrownCeremony(snapshot);
   }
 
-  // 進場／換隊時鎖死「自己半場背後」固定視角
-  if (snapshot.phase !== 'crownAward' && orbitCamera) {
+  if (snapshot.phase === 'teamReveal' && lastPhase !== 'teamReveal') {
+    beginTeamReveal(snapshot);
+  }
+
+  if (lastPhase === 'teamReveal' && snapshot.phase !== 'teamReveal') {
+    endTeamReveal();
+  }
+
+  // 進場／換隊時鎖死「自己半場背後」固定視角（揭曉中用拉遠鏡頭）
+  if (
+    snapshot.phase !== 'crownAward'
+    && snapshot.phase !== 'teamReveal'
+    && orbitCamera
+  ) {
     applyFixedSideCamera(orbitCamera, snapshot.localTeamId);
   }
 
@@ -827,6 +921,10 @@ const { canvasRef } = useBabylonScene({
 
       for (const actor of actors.values()) {
         actor.update(deltaMs);
+
+        if (props.snapshot.phase === 'teamReveal') {
+          actor.updatePanelPop(deltaMs);
+        }
       }
 
       syncMissPopup(props.snapshot);
@@ -835,6 +933,10 @@ const { canvasRef } = useBabylonScene({
       if (props.snapshot.phase === 'crownAward') {
         crownCeremony?.update(deltaMs);
         updateCeremonyCamera(deltaMs);
+      }
+
+      if (props.snapshot.phase === 'teamReveal' && teamRevealCameraActive && orbitCamera) {
+        applyTeamRevealCamera(orbitCamera, props.snapshot.localTeamId);
       }
     });
     sceneReady = true;

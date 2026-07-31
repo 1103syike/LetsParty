@@ -16,9 +16,9 @@ import { AnimalCrownCeremony } from '@/common/animals/animal-crown-ceremony';
 import { createPartyArenaStage } from '@/common/arena/arena-stage';
 import { getBumpCornerSpawn } from '@/common/arena/bump-physics';
 import { addPartyArenaDecor } from '@/common/arena/party-arena-decor';
+import { ActorKnockbackFallFx } from '@/common/fx/actor-knockback-fall-fx';
 import { useBabylonScene } from '@/composables/use-babylon-scene';
 import type { ArenaBumpSnapshot } from '@/minigames/arena-bump/arena-bump';
-import { ArenaBumpFallFx } from '@/minigames/arena-bump/arena-bump-fall-fx';
 import { ArenaBumpHitFx } from '@/minigames/arena-bump/arena-bump-hit-fx';
 import { usePartyStore } from '@/stores/party-store';
 
@@ -38,7 +38,7 @@ const locomotions = new Map<
   string,
   'idle' | 'run' | 'jump' | 'fallen' | 'attack' | 'ceremony'
 >();
-let fallFx: ArenaBumpFallFx | null = null;
+let fallFx: ActorKnockbackFallFx | null = null;
 let hitFx: ArenaBumpHitFx | null = null;
 let crownCeremony: AnimalCrownCeremony | null = null;
 let orbitCamera: ArcRotateCamera | null = null;
@@ -63,6 +63,9 @@ const PLAY_CAMERA_TARGET_Y = 0.35;
 
 async function syncActors(scene: Scene): Promise<void> {
   const count = partyStore.participants.length;
+  const spawnById = new Map(
+    props.snapshot.fighters.map((fighter) => [fighter.id, fighter.spawnSlot]),
+  );
 
   for (let index = 0; index < partyStore.participants.length; index += 1) {
     const participant = partyStore.participants[index]!;
@@ -71,7 +74,8 @@ async function syncActors(scene: Scene): Promise<void> {
       continue;
     }
 
-    const spawn = getBumpCornerSpawn(index, count);
+    const spawnSlot = spawnById.get(participant.id) ?? index;
+    const spawn = getBumpCornerSpawn(spawnSlot, count);
     const actor = await AnimalActor.create(scene, participant.animalId, participant.color);
     actor.setPosition(spawn.x, spawn.z);
     actor.faceWorldDirection(spawn.facingX, spawn.facingZ);
@@ -185,12 +189,9 @@ function playHitEffects(snapshot: ArenaBumpSnapshot): void {
     const participant = partyStore.participants.find((entry) => entry.id === hit.attackerId);
     hitFx?.playHit(hit, attacker, participant?.color ?? 'player-1');
 
-    if (hit.kind === 'finisher') {
-      shakeDuration = Math.max(shakeDuration, 720);
-      shakeStrength = Math.max(shakeStrength, 0.68);
-    } else if (hit.kind === 'charge') {
-      shakeDuration = Math.max(shakeDuration, 420);
-      shakeStrength = Math.max(shakeStrength, 0.4);
+    if (hit.kind === 'finisher' || hit.kind === 'charge') {
+      shakeDuration = Math.max(shakeDuration, 620);
+      shakeStrength = Math.max(shakeStrength, 0.62);
     } else {
       shakeDuration = Math.max(shakeDuration, 220);
       shakeStrength = Math.max(shakeStrength, 0.16);
@@ -237,8 +238,18 @@ function updateCameraShake(): void {
   orbitCamera.target.addInPlace(cameraShakeOffset);
 }
 
-function resolveLocalSpawnIndex(): number {
+function resolveLocalSpawnSlot(): number {
+  if (typeof props.snapshot.localSpawnSlot === 'number' && props.snapshot.localSpawnSlot >= 0) {
+    return props.snapshot.localSpawnSlot;
+  }
+
   const localId = props.snapshot.localPlayerId ?? partyStore.localParticipantId;
+  const fighter = props.snapshot.fighters.find((entry) => entry.id === localId);
+
+  if (fighter) {
+    return fighter.spawnSlot;
+  }
+
   const index = partyStore.participants.findIndex((participant) => participant.id === localId);
   return index >= 0 ? index : 0;
 }
@@ -246,7 +257,7 @@ function resolveLocalSpawnIndex(): number {
 /** 站在本機動物開局面向的正後方，視線朝台心（動物一開始看的方向） */
 function lockPlayCameraToLocalSpawn(camera: ArcRotateCamera): void {
   const count = Math.max(partyStore.participants.length, 1);
-  const spawn = getBumpCornerSpawn(resolveLocalSpawnIndex(), count);
+  const spawn = getBumpCornerSpawn(resolveLocalSpawnSlot(), count);
   const behindX = -spawn.facingX;
   const behindZ = -spawn.facingZ;
   const horiz = PLAY_CAMERA_RADIUS * Math.sin(PLAY_CAMERA_BETA);
@@ -421,7 +432,7 @@ const { canvasRef } = useBabylonScene({
   async init({ scene, engine, camera }) {
     createPartyArenaStage(scene);
     addPartyArenaDecor(scene);
-    fallFx = new ArenaBumpFallFx(scene);
+    fallFx = new ActorKnockbackFallFx(scene);
     hitFx = new ArenaBumpHitFx(scene);
     crownCeremony = new AnimalCrownCeremony(scene);
     await crownCeremony.preload();

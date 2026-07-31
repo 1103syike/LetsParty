@@ -9,6 +9,7 @@ import {
 import AnimalModelPreview from '@/components/animal-model-preview.vue';
 import { commonCopy } from '@/locales/zh-TW/common';
 import { lobbyCopy } from '@/locales/zh-TW/lobby';
+import { usePartyNetwork } from '@/composables/use-party-network';
 import {
   findParticipantByAnimalId,
   isAnimalBlockedForHumanPick,
@@ -35,6 +36,7 @@ const props = withDefaults(
 );
 
 const partyStore = usePartyStore();
+const network = usePartyNetwork();
 
 const selectedAnimalId = computed(() => partyStore.localParticipant?.animalId ?? null);
 
@@ -81,7 +83,7 @@ function handleSelect(animalId: AnimalId): void {
     return;
   }
 
-  partyStore.setLocalAnimal(animalId);
+  network.notifyLocalAnimal(animalId);
 }
 
 function isSelected(animalId: AnimalId): boolean {

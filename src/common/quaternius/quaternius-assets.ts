@@ -12,6 +12,7 @@ export const QUATERNius_PROP_SOURCES = {
   rock: 'https://poly.pizza/u/Quaternius',
   tree: 'https://poly.pizza/u/Quaternius',
   bush: 'https://poly.pizza/u/Quaternius',
+  bomb: 'https://poly.pizza/m/eXlaWiNM7z',
 } as const;
 
 export const QUATERNius_ATLAS_TEXTURE = '/textures/quaternius/atlas.png';
@@ -27,4 +28,6 @@ export const QUATERNius_PROPS = {
   grass: 'grass.glb',
   flowers: 'flowers.glb',
   bush: 'bush.glb',
+  /** Quaternius Bomb CC0；若檔案尚未放入則 scene 用程序化網格 */
+  bomb: 'bomb.glb',
 } as const;

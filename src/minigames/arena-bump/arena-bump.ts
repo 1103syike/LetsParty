@@ -18,7 +18,7 @@ import {
   type BumpHitEvent,
   type CpuBumpBrain,
 } from '@/common/arena/bump-physics';
-import { ARENA_BUMP_FALL_DURATION_MS } from '@/minigames/arena-bump/arena-bump-fall-fx';
+import { ACTOR_KNOCKBACK_FALL_DURATION_MS } from '@/common/fx/actor-knockback-fall-fx';
 import type { MiniGameCreateOptions, MiniGameInstance } from '@/minigames/types';
 import type { Participant } from '@/types/party';
 import type { PlayerInput } from '@/types/player-input';
@@ -28,7 +28,7 @@ const PLAY_DURATION_MS = 50000;
 /** 落地後再等多久才進頒冠／結算 */
 const AFTER_FALL_SETTLE_MS = 1000;
 /** 剩一人：等甩飛落地 + 再停 1 秒 */
-const END_WHEN_ONE_LEFT_MS = ARENA_BUMP_FALL_DURATION_MS + AFTER_FALL_SETTLE_MS;
+const END_WHEN_ONE_LEFT_MS = ACTOR_KNOCKBACK_FALL_DURATION_MS + AFTER_FALL_SETTLE_MS;
 const CROWN_AWARD_DURATION_MS = 3400;
 
 export type ArenaBumpPhase = 'countdown' | 'playing' | 'crownAward' | 'finished';
@@ -41,6 +41,8 @@ export interface ArenaBumpFighterSnapshot {
   vz: number;
   facingX: number;
   facingZ: number;
+  /** 本局開局四角槽位（打亂後） */
+  spawnSlot: number;
   alive: boolean;
   fallOrder: number;
   isCharging: boolean;
@@ -58,6 +60,8 @@ export interface ArenaBumpSnapshot {
   aliveCount: number;
   fighters: ArenaBumpFighterSnapshot[];
   localPlayerId: string | null;
+  /** 本機本局開局站位槽（供鏡頭／WASD 對齊） */
+  localSpawnSlot: number;
   localAlive: boolean;
   localChargeReady: boolean;
   /** 本機撞擊冷卻剩餘秒（小數；0 表示無冷卻） */
@@ -320,8 +324,9 @@ export class ArenaBumpGame implements MiniGameInstance {
     return scores;
   }
 
-  getGameSnapshot(): ArenaBumpSnapshot {
-    const local = this.bodies.find((body) => body.id === this.localPlayerId);
+  getGameSnapshot(viewerId?: string | null): ArenaBumpSnapshot {
+    const viewPlayerId = viewerId === undefined ? this.localPlayerId : viewerId;
+    const local = this.bodies.find((body) => body.id === viewPlayerId);
     const winnerId = this.phase === 'playing' && countAliveBodies(this.bodies) > 1
       ? null
       : (this.winnerId ?? resolveArenaWinnerId(this.bodies));
@@ -346,6 +351,7 @@ export class ArenaBumpGame implements MiniGameInstance {
         vz: body.vz,
         facingX: body.facingX,
         facingZ: body.facingZ,
+        spawnSlot: body.spawnSlot,
         alive: body.alive,
         fallOrder: body.fallOrder,
         isCharging: body.isCharging,
@@ -355,7 +361,8 @@ export class ArenaBumpGame implements MiniGameInstance {
           && body.stunMsLeft <= 0
           && body.jumpMsLeft <= 0,
       })),
-      localPlayerId: this.localPlayerId,
+      localPlayerId: viewPlayerId,
+      localSpawnSlot: local?.spawnSlot ?? 0,
       localAlive: local?.alive ?? false,
       localChargeReady: local
         ? local.chargeCooldownMs <= 0

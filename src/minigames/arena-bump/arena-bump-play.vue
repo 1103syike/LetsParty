@@ -229,9 +229,11 @@ function readSteer(): { x: number; y: number } {
   }
 
   const localId = partyStore.localParticipantId;
-  const spawnIndex = partyStore.participants.findIndex((participant) => participant.id === localId);
+  const localSpawnSlot = props.snapshot.localSpawnSlot >= 0
+    ? props.snapshot.localSpawnSlot
+    : partyStore.participants.findIndex((participant) => participant.id === localId);
   const spawn = getBumpCornerSpawn(
-    spawnIndex >= 0 ? spawnIndex : 0,
+    localSpawnSlot >= 0 ? localSpawnSlot : 0,
     Math.max(partyStore.participants.length, 1),
   );
   // W：朝開局面向（進畫面深處）；D：螢幕右側

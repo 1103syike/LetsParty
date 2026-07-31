@@ -31,4 +31,14 @@ export type PlayerInput =
       /** 滑鼠點選的世界座標落點；沒帶則用自動落點 */
       aimX?: number | null;
       aimZ?: number | null;
+    }
+  /** 蹦蹦炸彈：移動 + 跳躍／丟彈（滑鼠落點） */
+  | {
+      type: 'bouncy-bomb';
+      x: number;
+      y: number;
+      jump: boolean;
+      throwBomb: boolean;
+      aimX?: number | null;
+      aimZ?: number | null;
     };

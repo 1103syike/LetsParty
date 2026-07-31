@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { partyAudio } from '@/common/audio/party-audio';
 import AnimalModelPreview from '@/components/animal-model-preview.vue';
 import CuteCrownIcon from '@/components/cute-crown-icon.vue';
+import TeamRevealOverlay from '@/components/team-reveal-overlay.vue';
 import VolleyballEventIcon from '@/components/volleyball-event-icon.vue';
 import { partyCopy } from '@/locales/zh-TW/party';
 import { volleyballCopy } from '@/minigames/volleyball/locales/zh-TW';
@@ -89,6 +90,17 @@ const localParticipantId = computed(() => partyStore.localParticipantId);
 
 const showCrownCeremony = computed(() => props.snapshot.isCrownCeremony);
 
+const showTeamReveal = computed(() => props.snapshot.phase === 'teamReveal');
+
+const teamRevealCopy = {
+  title: volleyballCopy.teamRevealTitle,
+  teamA: volleyballCopy.teamA,
+  teamB: volleyballCopy.teamB,
+  vs: volleyballCopy.teamRevealVs,
+  go: volleyballCopy.teamRevealGo,
+  localPlayerTag: volleyballCopy.localPlayerTag,
+};
+
 const roundLabel = computed(() =>
   partyCopy.roundLabel.replace('{round}', String(props.roundIndex)),
 );
@@ -172,7 +184,8 @@ const ballOwnerVisible = computed((): boolean => {
     ownerId
     && props.snapshot.phase !== 'pointPause'
     && props.snapshot.phase !== 'crownAward'
-    && props.snapshot.phase !== 'finished',
+    && props.snapshot.phase !== 'finished'
+    && props.snapshot.phase !== 'teamReveal',
   );
 });
 
@@ -229,7 +242,22 @@ const matchPointLabel = computed((): string | null => {
 
 const statusLabel = computed(() => {
   if (props.snapshot.phase === 'serve') {
-    return volleyballCopy.serveHint;
+    const serverId = props.snapshot.servingPlayerId;
+    const localId = props.snapshot.localPlayerId;
+
+    if (serverId && localId && serverId === localId) {
+      return volleyballCopy.serveHint;
+    }
+
+    if (
+      serverId
+      && props.snapshot.localTeamId
+      && props.snapshot.servingTeam === props.snapshot.localTeamId
+    ) {
+      return volleyballCopy.serveHintTeammate;
+    }
+
+    return volleyballCopy.serveHintOpponent;
   }
 
   const scoringTeam = props.snapshot.scoringTeam;
@@ -562,6 +590,7 @@ function onCourtClick(point: { x: number; z: number; button: number }): void {
     props.snapshot.phase === 'crownAward'
     || props.snapshot.phase === 'finished'
     || props.snapshot.phase === 'pointPause'
+    || props.snapshot.phase === 'teamReveal'
   ) {
     return;
   }
@@ -661,7 +690,10 @@ onBeforeUnmount(() => {
   <Teleport to="body">
     <section
       class="volleyball-play"
-      :class="{ 'volleyball-play--crown-ceremony': showCrownCeremony }"
+      :class="{
+        'volleyball-play--crown-ceremony': showCrownCeremony,
+        'volleyball-play--team-reveal': showTeamReveal,
+      }"
       @contextmenu="onContextMenu"
     >
       <VolleyballScene
@@ -670,9 +702,19 @@ onBeforeUnmount(() => {
         @court-click="onCourtClick"
       />
 
+      <!-- 開局分隊揭曉 -->
+      <TeamRevealOverlay
+        v-if="showTeamReveal"
+        :team-a-ids="snapshot.teamAIds"
+        :team-b-ids="snapshot.teamBIds"
+        :show-go="snapshot.showTeamRevealGo"
+        :local-participant-id="localParticipantId"
+        :copy="teamRevealCopy"
+      />
+
       <!-- 置中比分 -->
       <div
-        v-if="!showCrownCeremony"
+        v-if="!showCrownCeremony && !showTeamReveal"
         class="vb-scoreboard game-chrome"
         :aria-label="volleyballCopy.scoreboardTitle"
       >
@@ -708,7 +750,7 @@ onBeforeUnmount(() => {
 
       <!-- 紅方左欄 -->
       <aside
-        v-if="!showCrownCeremony"
+        v-if="!showCrownCeremony && !showTeamReveal"
         class="vb-roster vb-roster--red game-chrome"
         :aria-label="volleyballCopy.teamA"
       >
@@ -724,6 +766,9 @@ onBeforeUnmount(() => {
                 'vb-hud__card--leader': row.isLeader,
                 'vb-hud__card--local': row.participant.id === localParticipantId,
                 'vb-hud__card--ball-owner': row.participant.id === snapshot.ballOwnerId,
+                'vb-hud__card--server':
+                  snapshot.phase === 'serve'
+                  && row.participant.id === snapshot.servingPlayerId,
               },
             ]"
           >
@@ -736,6 +781,13 @@ onBeforeUnmount(() => {
                 />
               </div>
               <span class="vb-hud__slot font-game">{{ playerSlotLabel(row.slot) }}</span>
+              <span
+                v-if="
+                  snapshot.phase === 'serve'
+                    && row.participant.id === snapshot.servingPlayerId
+                "
+                class="vb-hud__serve-tag font-game"
+              >{{ volleyballCopy.serveTag }}</span>
             </div>
             <div class="vb-hud__body">
               <span class="vb-hud__name">
@@ -782,7 +834,7 @@ onBeforeUnmount(() => {
 
       <!-- 藍方右欄 -->
       <aside
-        v-if="!showCrownCeremony"
+        v-if="!showCrownCeremony && !showTeamReveal"
         class="vb-roster vb-roster--blue game-chrome"
         :aria-label="volleyballCopy.teamB"
       >
@@ -798,6 +850,9 @@ onBeforeUnmount(() => {
                 'vb-hud__card--leader': row.isLeader,
                 'vb-hud__card--local': row.participant.id === localParticipantId,
                 'vb-hud__card--ball-owner': row.participant.id === snapshot.ballOwnerId,
+                'vb-hud__card--server':
+                  snapshot.phase === 'serve'
+                  && row.participant.id === snapshot.servingPlayerId,
               },
             ]"
           >
@@ -810,6 +865,13 @@ onBeforeUnmount(() => {
                 />
               </div>
               <span class="vb-hud__slot font-game">{{ playerSlotLabel(row.slot) }}</span>
+              <span
+                v-if="
+                  snapshot.phase === 'serve'
+                    && row.participant.id === snapshot.servingPlayerId
+                "
+                class="vb-hud__serve-tag font-game"
+              >{{ volleyballCopy.serveTag }}</span>
             </div>
             <div class="vb-hud__body">
               <span class="vb-hud__name">
@@ -900,7 +962,7 @@ onBeforeUnmount(() => {
       </div>
 
       <p
-        v-if="!showCrownCeremony"
+        v-if="!showCrownCeremony && !showTeamReveal"
         class="volleyball-play__status font-game game-chrome"
         :class="statusTeamClass"
       >
@@ -970,7 +1032,7 @@ onBeforeUnmount(() => {
       </div>
 
       <aside
-        v-if="!showCrownCeremony"
+        v-if="!showCrownCeremony && !showTeamReveal"
         class="volleyball-play__controls game-chrome"
         aria-label="操作提示"
       >
@@ -1356,6 +1418,29 @@ onBeforeUnmount(() => {
     3px 3px 0 color-mix(in srgb, var(--hud-tone) 42%, transparent);
   animation: vb-ball-owner-pulse 0.85s ease-in-out infinite;
   transform: scale(1.03);
+}
+
+.vb-hud__card--server {
+  outline: 3px solid var(--color-success);
+  outline-offset: 2px;
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--color-success) 35%, transparent),
+    3px 3px 0 color-mix(in srgb, var(--hud-tone) 42%, transparent);
+}
+
+.vb-hud__serve-tag {
+  position: absolute;
+  right: -0.15rem;
+  bottom: -0.1rem;
+  z-index: 2;
+  min-width: 1.25rem;
+  padding: 0.05rem 0.25rem;
+  border-radius: var(--radius-full);
+  background: var(--color-success);
+  color: var(--color-bg);
+  font-size: var(--font-size-xs);
+  line-height: 1.2;
+  text-align: center;
 }
 
 .vb-hud__crowns {

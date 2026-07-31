@@ -76,10 +76,8 @@ export class ArenaBumpHitFx {
   ): void {
     const colorHex = PLAYER_COLOR_HEX[attackerColor] ?? '#9b7fd4';
 
-    if (hit.kind === 'finisher') {
+    if (hit.kind === 'finisher' || hit.kind === 'charge') {
       this.playFinisher(hit.x, hit.z, colorHex);
-    } else if (hit.kind === 'charge') {
-      this.playSuperKick(hit.x, hit.z, colorHex);
     } else {
       this.spawnBurst(hit.x, hit.z, colorHex, 52, 0.6);
       this.spawnShockRing(hit.x, hit.z, colorHex, 0.9, 360);
@@ -91,10 +89,10 @@ export class ArenaBumpHitFx {
 
     attacker.playAttack();
     const lockMs = hit.kind === 'finisher'
-      ? 980
+      ? 720
       : hit.kind === 'charge'
-        ? 780
-        : 360;
+        ? 560
+        : 280;
     this.attackLockUntil.set(hit.attackerId, performance.now() + lockMs);
   }
 
@@ -178,22 +176,6 @@ export class ArenaBumpHitFx {
 
       this.spawnBurst(x, z, colorHex, 40, 1.1);
     }, 160);
-  }
-
-  private playSuperKick(x: number, z: number, colorHex: string): void {
-    this.spawnBurst(x, z, colorHex, 110, 0.9);
-    this.spawnStarBurst(x, z, colorHex, 72);
-    this.spawnShockRing(x, z, colorHex, 1.25, 540);
-    this.showFlash(x, z, colorHex, 1.55, 480);
-
-    // 第二波延遲小爆，像連擊火花
-    window.setTimeout(() => {
-      if (this.scene.isDisposed) {
-        return;
-      }
-
-      this.spawnBurst(x, z, '#ffe566', 56, 1.15);
-    }, 70);
   }
 
   private showFlash(

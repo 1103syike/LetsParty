@@ -47,8 +47,8 @@ class RockPaperScissorsMiniGame implements MiniGameInstance {
     return this.game.getRoundResults();
   }
 
-  getGameSnapshot(): RockPaperScissorsSnapshot {
-    return this.game.getSnapshot(this.localPlayerId);
+  getGameSnapshot(viewerId?: string | null): RockPaperScissorsSnapshot {
+    return this.game.getSnapshot(viewerId === undefined ? this.localPlayerId : viewerId);
   }
 
   isFinished(): boolean {

@@ -1,5 +1,7 @@
 import { arenaBumpDefinition } from '@/minigames/arena-bump';
 import { ARENA_BUMP_ID } from '@/minigames/arena-bump/arena-bump-id';
+import { bouncyBombDefinition } from '@/minigames/bouncy-bomb';
+import { BOUNCY_BOMB_ID } from '@/minigames/bouncy-bomb/bouncy-bomb-id';
 import { mashButtonDefinition } from '@/minigames/mash-button';
 import { rockPaperScissorsDefinition, ROCK_PAPER_SCISSORS_ID } from '@/minigames/rock-paper-scissors';
 import type { MiniGameDefinition } from '@/minigames/types';
@@ -10,6 +12,7 @@ const MINI_GAME_REGISTRY: MiniGameDefinition[] = [
   rockPaperScissorsDefinition,
   arenaBumpDefinition,
   volleyballDefinition,
+  bouncyBombDefinition,
   mashButtonDefinition,
 ];
 
@@ -18,6 +21,7 @@ const ROTATION_POOL: MiniGameDefinition[] = [
   rockPaperScissorsDefinition,
   arenaBumpDefinition,
   volleyballDefinition,
+  bouncyBombDefinition,
 ];
 
 export const DEFAULT_ENABLED_MINI_GAME_IDS: string[] = ROTATION_POOL.map(
@@ -59,4 +63,4 @@ export function pickRandomMiniGame(enabledIds?: string[]): MiniGameDefinition {
   return pool[index] ?? rockPaperScissorsDefinition;
 }
 
-export { ARENA_BUMP_ID, ROCK_PAPER_SCISSORS_ID, VOLLEYBALL_ID };
+export { ARENA_BUMP_ID, BOUNCY_BOMB_ID, ROCK_PAPER_SCISSORS_ID, VOLLEYBALL_ID };

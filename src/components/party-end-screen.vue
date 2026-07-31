@@ -13,6 +13,8 @@ import type { Participant } from '@/types/party';
 
 type PartyEndStep = 'celebrate' | 'standings' | 'recap';
 
+const PARTY_END_STEPS = ['celebrate', 'standings', 'recap'] as const satisfies readonly PartyEndStep[];
+
 const props = defineProps<{
   winnerIds: string[];
   participants: Participant[];
@@ -31,7 +33,17 @@ const step = ref<PartyEndStep>('celebrate');
 const showFanfare = ref(false);
 const showWinnerPop = ref(false);
 const showConfetti = ref(false);
+/** 進過 recap 或手動切頁後，允許自由來回翻 */
+const canBrowseSteps = ref(false);
+/** 每次回到走勢頁遞增，讓圖表動畫重播 */
+const recapVisitKey = ref(0);
 let stepTimeoutIds: number[] = [];
+
+const stepIndex = computed(() => PARTY_END_STEPS.indexOf(step.value));
+
+const canGoPrev = computed(() => stepIndex.value > 0);
+
+const canGoNext = computed(() => stepIndex.value < PARTY_END_STEPS.length - 1);
 
 const sortedParticipants = computed(() => sortParticipantsByCrown(props.participants));
 
@@ -116,8 +128,65 @@ function clearStepTimers(): void {
   stepTimeoutIds = [];
 }
 
+function applyCelebratePresentation(isComplete: boolean): void {
+  showConfetti.value = true;
+  showFanfare.value = isComplete;
+  showWinnerPop.value = isComplete;
+}
+
+function enterStep(next: PartyEndStep): void {
+  if (next === 'celebrate') {
+    applyCelebratePresentation(true);
+  }
+
+  if (next === 'recap' && step.value !== 'recap') {
+    recapVisitKey.value += 1;
+  }
+
+  step.value = next;
+}
+
+function goToStep(next: PartyEndStep): void {
+  if (step.value === next) {
+    return;
+  }
+
+  clearStepTimers();
+  canBrowseSteps.value = true;
+  enterStep(next);
+}
+
+function goPrevStep(): void {
+  if (!canGoPrev.value) {
+    return;
+  }
+
+  goToStep(PARTY_END_STEPS[stepIndex.value - 1]!);
+}
+
+function goNextStep(): void {
+  if (!canGoNext.value) {
+    return;
+  }
+
+  goToStep(PARTY_END_STEPS[stepIndex.value + 1]!);
+}
+
+function stepDotLabel(target: PartyEndStep): string {
+  if (target === 'celebrate') {
+    return partyCopy.partyEndStepCelebrate;
+  }
+
+  if (target === 'standings') {
+    return partyCopy.partyEndStepStandings;
+  }
+
+  return partyCopy.partyEndStepRecap;
+}
+
 function schedulePartyEndSequence(): void {
   clearStepTimers();
+  canBrowseSteps.value = false;
   step.value = 'celebrate';
   showConfetti.value = true;
   showFanfare.value = false;
@@ -134,7 +203,9 @@ function schedulePartyEndSequence(): void {
       step.value = 'standings';
     }, CELEBRATE_MS),
     window.setTimeout(() => {
+      recapVisitKey.value += 1;
       step.value = 'recap';
+      canBrowseSteps.value = true;
     }, CELEBRATE_MS + STANDINGS_MS),
   ];
 }
@@ -262,10 +333,23 @@ function placeLabel(place: number): string {
           </p>
         </div>
 
-        <div class="party-end__dots" aria-hidden="true">
-          <span class="party-end__dots-item party-end__dots-item--active" />
-          <span class="party-end__dots-item" />
-          <span class="party-end__dots-item" />
+        <div
+          v-if="canBrowseSteps"
+          class="party-end__nav flex gap-sm full-width"
+        >
+          <ActionButton
+            class="party-end__nav-btn"
+            :disabled="!canGoPrev"
+            @click="goPrevStep"
+          >
+            {{ partyCopy.partyEndPrevStep }}
+          </ActionButton>
+          <ActionButton
+            class="party-end__nav-btn"
+            @click="goNextStep"
+          >
+            {{ partyCopy.partyEndNextStep }}
+          </ActionButton>
         </div>
       </div>
 
@@ -338,10 +422,22 @@ function placeLabel(place: number): string {
           :champion-ids="[]"
         />
 
-        <div class="party-end__dots" aria-hidden="true">
-          <span class="party-end__dots-item" />
-          <span class="party-end__dots-item party-end__dots-item--active" />
-          <span class="party-end__dots-item" />
+        <div
+          v-if="canBrowseSteps"
+          class="party-end__nav flex gap-sm full-width"
+        >
+          <ActionButton
+            class="party-end__nav-btn"
+            @click="goPrevStep"
+          >
+            {{ partyCopy.partyEndPrevStep }}
+          </ActionButton>
+          <ActionButton
+            class="party-end__nav-btn"
+            @click="goNextStep"
+          >
+            {{ partyCopy.partyEndNextStep }}
+          </ActionButton>
         </div>
       </div>
 
@@ -357,6 +453,7 @@ function placeLabel(place: number): string {
         </header>
 
         <PartyCrownChart
+          :key="recapVisitKey"
           :participants="participants"
           :crown-history="crownHistory"
         />
@@ -365,17 +462,39 @@ function placeLabel(place: number): string {
           {{ partyEndMessage }}
         </p>
 
-        <ActionButton variant="hero" @click="emit('backHome')">
-          {{ commonCopy.backHome }}
-        </ActionButton>
-
-        <div class="party-end__dots" aria-hidden="true">
-          <span class="party-end__dots-item" />
-          <span class="party-end__dots-item" />
-          <span class="party-end__dots-item party-end__dots-item--active" />
+        <div class="party-end__nav flex gap-sm full-width">
+          <ActionButton
+            class="party-end__nav-btn"
+            @click="goPrevStep"
+          >
+            {{ partyCopy.partyEndPrevStep }}
+          </ActionButton>
+          <ActionButton
+            class="party-end__nav-btn"
+            variant="hero"
+            @click="emit('backHome')"
+          >
+            {{ commonCopy.backHome }}
+          </ActionButton>
         </div>
       </div>
     </Transition>
+
+    <nav
+      class="party-end__dots"
+      :aria-label="partyCopy.partyEndStepNav"
+    >
+      <button
+        v-for="target in PARTY_END_STEPS"
+        :key="target"
+        type="button"
+        class="party-end__dots-item"
+        :class="{ 'party-end__dots-item--active': step === target }"
+        :aria-label="stepDotLabel(target)"
+        :aria-current="step === target ? 'step' : undefined"
+        @click="goToStep(target)"
+      />
+    </nav>
   </section>
 </template>
 
@@ -725,6 +844,15 @@ function placeLabel(place: number): string {
   color: var(--color-text-heading);
 }
 
+.party-end__nav {
+  margin-top: var(--space-xs);
+}
+
+.party-end__nav-btn {
+  flex: 1;
+  min-width: 0;
+}
+
 .party-end__dots {
   display: flex;
   justify-content: center;
@@ -735,8 +863,18 @@ function placeLabel(place: number): string {
 .party-end__dots-item {
   width: var(--space-sm);
   height: var(--space-sm);
+  padding: 0;
+  border: none;
   border-radius: 50%;
   background: color-mix(in srgb, var(--color-accent) 24%, transparent);
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease;
+
+  &:hover,
+  &:focus-visible {
+    background: color-mix(in srgb, var(--color-accent) 55%, transparent);
+    outline: none;
+  }
 
   &--active {
     background: var(--color-accent);

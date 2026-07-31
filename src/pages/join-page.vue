@@ -25,8 +25,7 @@ function handleJoin(): void {
     return;
   }
 
-  // 暱稱改在大廳第一步填
-  partyStore.joinRoom(roomId);
+  partyStore.beginGuestJoin(roomId);
   router.push({ name: 'room', params: { id: roomId } });
 }
 
@@ -50,7 +49,7 @@ function handleBack(): void {
           maxlength="6"
           :placeholder="joinCopy.roomCodePlaceholder"
           @keyup.enter="handleJoin"
-        />
+        >
       </label>
 
       <ActionButton

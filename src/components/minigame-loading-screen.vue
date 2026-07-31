@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
-import ActionButton from '@/components/action-button.vue';
 import { partyCopy } from '@/locales/zh-TW/party';
 import { getMiniGameLoadingContent } from '@/party/minigame-loading/minigame-loading';
 
@@ -9,10 +8,13 @@ const props = defineProps<{
   gameId: string | null;
   roundLabel: string;
   isSuddenDeath: boolean;
+  readyCount: number;
+  readyTotal: number;
+  hasLocalReady: boolean;
 }>();
 
 const emit = defineEmits<{
-  start: [];
+  ready: [];
 }>();
 
 /** 載入稍長一點，多輪到幾張教學圖 */
@@ -23,7 +25,8 @@ const content = computed(() => getMiniGameLoadingContent(props.gameId));
 
 const progress = ref(0);
 const slideIndex = ref(0);
-const isReady = computed(() => progress.value >= 100);
+const isLoadComplete = computed(() => progress.value >= 100);
+const hasEmittedReady = ref(false);
 
 let loadRafId: number | null = null;
 let slideIntervalId: number | null = null;
@@ -39,9 +42,23 @@ const currentSlide = computed(() => {
   return slides[slideIndex.value % slides.length]!;
 });
 
-const progressLabel = computed(() =>
-  isReady.value ? partyCopy.loadingReady : partyCopy.loadingLabel,
-);
+const progressLabel = computed(() => {
+  if (!isLoadComplete.value) {
+    return partyCopy.loadingLabel;
+  }
+
+  if (props.readyTotal <= 1) {
+    return partyCopy.loadingReady;
+  }
+
+  if (props.readyCount >= props.readyTotal) {
+    return partyCopy.loadingAllReady;
+  }
+
+  return partyCopy.loadingWaitingOthers
+    .replace('{ready}', String(props.readyCount))
+    .replace('{total}', String(props.readyTotal));
+});
 
 const slideCounter = computed(() => {
   const total = content.value.slides.length;
@@ -67,6 +84,15 @@ function stopSlideLoop(): void {
   }
 }
 
+function emitReadyOnce(): void {
+  if (hasEmittedReady.value) {
+    return;
+  }
+
+  hasEmittedReady.value = true;
+  emit('ready');
+}
+
 function tickLoad(now: number): void {
   const elapsed = now - loadStartedAt;
   const next = Math.min(100, Math.round((elapsed / LOAD_DURATION_MS) * 100));
@@ -78,6 +104,7 @@ function tickLoad(now: number): void {
   }
 
   loadRafId = null;
+  emitReadyOnce();
 }
 
 function advanceSlide(): void {
@@ -95,23 +122,25 @@ function startLoading(): void {
   stopSlideLoop();
   progress.value = 0;
   slideIndex.value = 0;
+  hasEmittedReady.value = false;
   loadStartedAt = performance.now();
   loadRafId = window.requestAnimationFrame(tickLoad);
   slideIntervalId = window.setInterval(advanceSlide, SLIDE_INTERVAL_MS);
-}
-
-function handleStart(): void {
-  if (!isReady.value) {
-    return;
-  }
-
-  emit('start');
 }
 
 watch(
   () => props.gameId,
   () => {
     startLoading();
+  },
+);
+
+watch(
+  () => props.hasLocalReady,
+  (ready) => {
+    if (ready) {
+      hasEmittedReady.value = true;
+    }
   },
 );
 
@@ -205,19 +234,11 @@ onUnmounted(() => {
           >
             <span
               class="minigame-loading__bar-fill"
-              :class="{ 'minigame-loading__bar-fill--ready': isReady }"
+              :class="{ 'minigame-loading__bar-fill--ready': isLoadComplete }"
               :style="{ width: `${progress}%` }"
             />
           </div>
         </div>
-
-        <ActionButton
-          variant="hero"
-          :disabled="!isReady"
-          @click="handleStart"
-        >
-          {{ partyCopy.loadingStartGame }}
-        </ActionButton>
       </div>
     </section>
   </Teleport>

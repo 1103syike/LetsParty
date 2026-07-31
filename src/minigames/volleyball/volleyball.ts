@@ -1,3 +1,7 @@
+import {
+  awardsForWinningTeam,
+  splitIntoTwoTeams,
+} from '@/common/party/team-split';
 import type { MiniGameInstance } from '@/minigames/types';
 import {
   VB_BALL_RADIUS,
@@ -9,6 +13,7 @@ import {
   vbHorizontalDistance,
 } from '@/minigames/volleyball/volleyball-collision';
 import {
+  VB_SIDELINE_OUT_PAD,
   vbChaseDistance,
   vbComputeCpuInput,
   vbCpuHomeSpot,
@@ -21,6 +26,8 @@ import type { Participant } from '@/types/party';
 import type { PlayerInput } from '@/types/player-input';
 
 const SCORE_TO_WIN = 5;
+/** 終局須領先至少兩分（沙排／派對對齊） */
+const WIN_BY = 2;
 /** 放大半場：跑位要喘，深角才有威脅 */
 const COURT_HALF_WIDTH = 7.0;
 const COURT_HALF_DEPTH = 9.6;
@@ -34,7 +41,7 @@ const NET_CLEAR_Y = NET_TOP_Y + 0.28;
 const CROSSED_NET_MIN_OWN_Z = NET_THICKNESS;
 /** 重力略重一點，弧線別掛太久變成無限對敲 */
 const GRAVITY = 12.2;
-const MOVE_SPEED = 5.7;
+const MOVE_SPEED = 6.2;
 /** 跳躍殺球再高一點，摸球點才像扣殺 */
 const JUMP_SPEED = 7.6;
 /** 擊球瞬間球心高度（站立托／墊） */
@@ -44,10 +51,20 @@ const POINT_PAUSE_MS = 1200;
 /** 殺球落地炸飛：多留一點時間看特效 */
 const SPIKE_KILL_PAUSE_MS = 2000;
 const CROWN_AWARD_MS = 3400;
+/** 開局分隊揭曉 */
+const TEAM_REVEAL_MS = 3600;
+/** 揭曉尾聲顯示「開戰！」 */
+const TEAM_REVEAL_GO_MS = 700;
 const SERVE_HEIGHT = 1.1;
 
 export type VolleyballTeamId = 'a' | 'b';
-export type VolleyballPhase = 'serve' | 'rally' | 'pointPause' | 'crownAward' | 'finished';
+export type VolleyballPhase =
+  | 'teamReveal'
+  | 'serve'
+  | 'rally'
+  | 'pointPause'
+  | 'crownAward'
+  | 'finished';
 export type VolleyballHitKind = 'bump' | 'set' | 'spike';
 
 /** 對戰事件（足球式 log／進球歸因） */
@@ -118,6 +135,8 @@ export interface VolleyballSnapshot {
   teamAIds: string[];
   teamBIds: string[];
   servingTeam: VolleyballTeamId;
+  /** 當前該發球的人（沙排輪流） */
+  servingPlayerId: string | null;
   ball: { x: number; y: number; z: number };
   /** 預期落地 xz（發球／飛行中都有） */
   predictedLand: { x: number; z: number } | null;
@@ -162,6 +181,12 @@ export interface VolleyballSnapshot {
   isCrownCeremony: boolean;
   crownWinnerIds: string[];
   crownAwardDurationMs: number;
+  /** 分隊揭曉剩餘毫秒（僅 teamReveal） */
+  teamRevealMsLeft: number;
+  /** 揭曉進度 0～1 */
+  teamRevealProgress: number;
+  /** 揭曉尾聲「開戰！」 */
+  showTeamRevealGo: boolean;
 }
 
 interface CourtPlayer {
@@ -196,19 +221,6 @@ interface BallState {
   prevZ: number;
 }
 
-function shuffleIds(ids: string[]): string[] {
-  const next = [...ids];
-
-  for (let index = next.length - 1; index > 0; index -= 1) {
-    const swap = Math.floor(Math.random() * (index + 1));
-    const temp = next[index];
-    next[index] = next[swap];
-    next[swap] = temp;
-  }
-
-  return next;
-}
-
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -223,6 +235,9 @@ function oppositeTeam(teamId: VolleyballTeamId): VolleyballTeamId {
 
 export class VolleyballGame implements MiniGameInstance {
   private readonly localPlayerId: string | null;
+
+  /** 人類才做 B 隊相機翻轉；CPU 給的已是世界座標 */
+  private readonly humanPlayerIds: Set<string>;
 
   private readonly teamAIds: string[];
 
@@ -241,13 +256,21 @@ export class VolleyballGame implements MiniGameInstance {
     prevZ: -2.4,
   };
 
-  private phase: VolleyballPhase = 'serve';
+  private phase: VolleyballPhase = 'teamReveal';
 
   private scoreA = 0;
 
   private scoreB = 0;
 
   private servingTeam: VolleyballTeamId = 'a';
+
+  private servingPlayerId: string | null = null;
+
+  /** 各隊上一回實際發過球的人（拿回發球權時換另一人） */
+  private lastServerByTeam: Record<VolleyballTeamId, string | null> = {
+    a: null,
+    b: null,
+  };
 
   private possessionTeam: VolleyballTeamId = 'a';
 
@@ -313,9 +336,6 @@ export class VolleyballGame implements MiniGameInstance {
 
   private opponentMissOwnerId: string | null = null;
 
-  /** 探針腳本用：關掉緊急救球的隨機漏接，讓斷言可重現 */
-  private debugProbeActive = false;
-
   private queuedActions = new Map<string, {
     bump: boolean;
     set: boolean;
@@ -333,9 +353,14 @@ export class VolleyballGame implements MiniGameInstance {
 
   constructor(participants: Participant[], localPlayerId: string | null = null) {
     this.localPlayerId = localPlayerId;
-    const shuffled = shuffleIds(participants.map((participant) => participant.id));
-    this.teamAIds = shuffled.slice(0, 2);
-    this.teamBIds = shuffled.slice(2, 4);
+    this.humanPlayerIds = new Set(
+      participants
+        .filter((participant) => participant.kind === 'human')
+        .map((participant) => participant.id),
+    );
+    const teams = splitIntoTwoTeams(participants.map((participant) => participant.id));
+    this.teamAIds = teams.teamAIds;
+    this.teamBIds = teams.teamBIds;
     this.players = [
       ...this.teamAIds.map((id, index) => this.createPlayer(id, 'a', index)),
       ...this.teamBIds.map((id, index) => this.createPlayer(id, 'b', index)),
@@ -344,10 +369,13 @@ export class VolleyballGame implements MiniGameInstance {
   }
 
   start(): void {
-    this.phase = 'serve';
+    this.phase = 'teamReveal';
     this.scoreA = 0;
     this.scoreB = 0;
     this.servingTeam = Math.random() < 0.5 ? 'a' : 'b';
+    this.lastServerByTeam = { a: null, b: null };
+    this.servingPlayerId = this.pickInitialServer(this.servingTeam);
+    this.lastServerByTeam[this.servingTeam] = this.servingPlayerId;
     this.winnerTeam = null;
     this.elapsedMs = 0;
     this.hitSerial = 0;
@@ -524,13 +552,7 @@ export class VolleyballGame implements MiniGameInstance {
     const distBefore = owner ? vbHorizontalDistance(owner, this.ball) : Number.POSITIVE_INFINITY;
     const hitSerialBefore = this.hitSerial;
 
-    this.debugProbeActive = true;
-
-    try {
-      this.tryCpuEmergencyReturn();
-    } finally {
-      this.debugProbeActive = false;
-    }
+    this.tryCpuEmergencyReturn();
 
     const didHit = this.hitSerial !== hitSerialBefore;
     const hitter = this.lastToucherId
@@ -674,7 +696,12 @@ export class VolleyballGame implements MiniGameInstance {
   }
 
   onPlayerInput(playerId: string, input: PlayerInput): void {
-    if (this.phase === 'crownAward' || this.phase === 'finished' || this.phase === 'pointPause') {
+    if (
+      this.phase === 'crownAward'
+      || this.phase === 'finished'
+      || this.phase === 'pointPause'
+      || this.phase === 'teamReveal'
+    ) {
       return;
     }
 
@@ -684,8 +711,8 @@ export class VolleyballGame implements MiniGameInstance {
       return;
     }
 
-    // 只有本機人類要依相機翻轉；CPU 給的已是世界座標，翻了會往角落跑
-    const flipScreen = playerId === this.localPlayerId && player.teamId === 'b' ? -1 : 1;
+    // 人類 B 隊依相機翻轉；CPU 給的已是世界座標，翻了會往角落跑
+    const flipScreen = player.teamId === 'b' && this.humanPlayerIds.has(playerId) ? -1 : 1;
 
     if (input.type === 'joystick') {
       player.steerX = input.x * flipScreen;
@@ -779,6 +806,7 @@ export class VolleyballGame implements MiniGameInstance {
         phase: this.phase,
         possessionTeam: this.possessionTeam,
         servingTeam: this.servingTeam,
+        servingPlayerId: this.servingPlayerId,
         touchesUsed: this.touchesUsed,
         serveLockMs: this.serveLockMs,
         lastToucherId: this.lastToucherId,
@@ -805,6 +833,15 @@ export class VolleyballGame implements MiniGameInstance {
     this.elapsedMs += deltaMs;
     const deltaSec = Math.min(0.05, deltaMs / 1000);
 
+    if (this.phase === 'teamReveal') {
+      if (this.elapsedMs >= TEAM_REVEAL_MS) {
+        this.resetForServe();
+        this.phase = 'serve';
+      }
+
+      return;
+    }
+
     if (this.phase === 'crownAward') {
       if (this.elapsedMs >= this.crownAwardStartedAt + CROWN_AWARD_MS) {
         this.phase = 'finished';
@@ -819,7 +856,7 @@ export class VolleyballGame implements MiniGameInstance {
       this.tickBlastPhysics(deltaSec);
 
       if (this.pointPauseMs >= this.pointPauseDurationMs) {
-        if (this.scoreA >= SCORE_TO_WIN || this.scoreB >= SCORE_TO_WIN) {
+        if (this.hasWonSet()) {
           this.beginCrownAward();
         } else {
           this.resetForServe();
@@ -868,23 +905,16 @@ export class VolleyballGame implements MiniGameInstance {
   }
 
   getCrownAwards(): Record<string, number> {
-    const awards: Record<string, number> = {};
+    const winnerIds = this.winnerTeam === 'a'
+      ? this.teamAIds
+      : this.winnerTeam === 'b'
+        ? this.teamBIds
+        : null;
 
-    for (const player of this.players) {
-      awards[player.id] = 0;
-    }
-
-    if (!this.winnerTeam) {
-      return awards;
-    }
-
-    const winners = this.winnerTeam === 'a' ? this.teamAIds : this.teamBIds;
-
-    for (const id of winners) {
-      awards[id] = 1;
-    }
-
-    return awards;
+    return awardsForWinningTeam(
+      this.players.map((player) => player.id),
+      winnerIds,
+    );
   }
 
   getRoundResults(): Record<string, 'win' | 'lose'> {
@@ -968,8 +998,9 @@ export class VolleyballGame implements MiniGameInstance {
     };
   }
 
-  getGameSnapshot(): VolleyballSnapshot {
-    const local = this.players.find((player) => player.id === this.localPlayerId);
+  getGameSnapshot(viewerId?: string | null): VolleyballSnapshot {
+    const viewPlayerId = viewerId === undefined ? this.localPlayerId : viewerId;
+    const local = this.players.find((player) => player.id === viewPlayerId);
     const assignment = this.resolveBallAssignment();
 
     return {
@@ -979,6 +1010,7 @@ export class VolleyballGame implements MiniGameInstance {
       teamAIds: [...this.teamAIds],
       teamBIds: [...this.teamBIds],
       servingTeam: this.servingTeam,
+      servingPlayerId: this.servingPlayerId,
       ball: { x: this.ball.x, y: this.ball.y, z: this.ball.z },
       predictedLand: assignment.land,
       ballOwnerId: assignment.ownerId,
@@ -996,7 +1028,7 @@ export class VolleyballGame implements MiniGameInstance {
         isBlasted: player.blastMsLeft > 0,
         alive: true,
       })),
-      localPlayerId: this.localPlayerId,
+      localPlayerId: viewPlayerId,
       localTeamId: local?.teamId ?? null,
       touchesLeft: Math.max(0, MAX_TOUCHES - this.touchesUsed),
       lastToucherId: this.lastToucherId,
@@ -1024,6 +1056,14 @@ export class VolleyballGame implements MiniGameInstance {
           ? [...this.teamBIds]
           : [],
       crownAwardDurationMs: CROWN_AWARD_MS,
+      teamRevealMsLeft: this.phase === 'teamReveal'
+        ? Math.max(0, TEAM_REVEAL_MS - this.elapsedMs)
+        : 0,
+      teamRevealProgress: this.phase === 'teamReveal'
+        ? clamp(this.elapsedMs / TEAM_REVEAL_MS, 0, 1)
+        : 0,
+      showTeamRevealGo: this.phase === 'teamReveal'
+        && this.elapsedMs >= TEAM_REVEAL_MS - TEAM_REVEAL_GO_MS,
     };
   }
 
@@ -1049,6 +1089,7 @@ export class VolleyballGame implements MiniGameInstance {
       this.phase === 'pointPause'
       || this.phase === 'crownAward'
       || this.phase === 'finished'
+      || this.phase === 'teamReveal'
     ) {
       return { land: null, ownerId: null, landTimeSec: null };
     }
@@ -1076,9 +1117,8 @@ export class VolleyballGame implements MiniGameInstance {
       };
 
       if (this.phase === 'serve') {
-        const server = this.players.find((player) => {
-          return player.teamId === this.servingTeam && this.teamSlotIndex(player) === 0;
-        }) ?? this.players.find((player) => player.teamId === this.servingTeam);
+        const server = this.players.find((player) => player.id === this.servingPlayerId)
+          ?? this.players.find((player) => player.teamId === this.servingTeam);
 
         return { land, ownerId: server?.id ?? null, landTimeSec: raw.timeSec };
       }
@@ -1136,17 +1176,46 @@ export class VolleyballGame implements MiniGameInstance {
       return null;
     }
 
-    const matchPointScore = SCORE_TO_WIN - 1;
-
-    if (this.scoreA >= matchPointScore && this.scoreA > this.scoreB) {
+    if (this.wouldWinSet('a')) {
       return 'a';
     }
 
-    if (this.scoreB >= matchPointScore && this.scoreB > this.scoreA) {
+    if (this.wouldWinSet('b')) {
       return 'b';
     }
 
     return null;
+  }
+
+  /** 先到 SCORE_TO_WIN 且領先 WIN_BY */
+  private hasWonSet(scoreA = this.scoreA, scoreB = this.scoreB): boolean {
+    const lead = Math.abs(scoreA - scoreB);
+    return (scoreA >= SCORE_TO_WIN || scoreB >= SCORE_TO_WIN) && lead >= WIN_BY;
+  }
+
+  private wouldWinSet(teamId: VolleyballTeamId): boolean {
+    const nextA = teamId === 'a' ? this.scoreA + 1 : this.scoreA;
+    const nextB = teamId === 'b' ? this.scoreB + 1 : this.scoreB;
+    return this.hasWonSet(nextA, nextB);
+  }
+
+  private pickInitialServer(teamId: VolleyballTeamId): string | null {
+    const onTeam = this.players.filter((player) => player.teamId === teamId);
+    const preferred = onTeam.find((player) => this.teamSlotIndex(player) === 0);
+    return preferred?.id ?? onTeam[0]?.id ?? null;
+  }
+
+  /** 拿回發球權：換成該隊上一回沒發的那位 */
+  private pickSideOutServer(teamId: VolleyballTeamId): string | null {
+    const onTeam = this.players.filter((player) => player.teamId === teamId);
+
+    if (onTeam.length === 0) {
+      return null;
+    }
+
+    const lastId = this.lastServerByTeam[teamId];
+    const other = onTeam.find((player) => player.id !== lastId);
+    return other?.id ?? onTeam[0]?.id ?? null;
   }
 
   /**
@@ -1214,6 +1283,7 @@ export class VolleyballGame implements MiniGameInstance {
         phase: 'serve',
         possessionTeam: teamId,
         servingTeam: teamId,
+        servingPlayerId: null,
         touchesUsed: 0,
         serveLockMs: 0,
         lastToucherId: null,
@@ -1270,6 +1340,7 @@ export class VolleyballGame implements MiniGameInstance {
         phase: 'serve',
         possessionTeam: this.servingTeam,
         servingTeam: this.servingTeam,
+        servingPlayerId: this.servingPlayerId,
         touchesUsed: 0,
         serveLockMs: 0,
         lastToucherId: null,
@@ -1283,9 +1354,9 @@ export class VolleyballGame implements MiniGameInstance {
         netThickness: NET_THICKNESS,
         cpuSolidContact: VB_CPU_SOLID_CONTACT,
       });
-      // 發球方後排再往後一點
+      // 發球方：當前 server 再往後一點
       const side = teamSideSign(player.teamId);
-      const serveExtra = player.teamId === this.servingTeam && player.role === 'back' ? 0.7 : 0;
+      const serveExtra = player.id === this.servingPlayerId ? 0.7 : 0;
       player.x = home.x;
       player.z = home.z + side * serveExtra;
       player.y = 0;
@@ -1312,13 +1383,8 @@ export class VolleyballGame implements MiniGameInstance {
   }
 
   private holdServeBall(): void {
-    const server = this.players.find((player) => {
-      if (player.teamId !== this.servingTeam) {
-        return false;
-      }
-
-      return this.teamSlotIndex(player) === 0;
-    }) ?? this.players.find((player) => player.teamId === this.servingTeam);
+    const server = this.players.find((player) => player.id === this.servingPlayerId)
+      ?? this.players.find((player) => player.teamId === this.servingTeam);
 
     if (!server) {
       return;
@@ -1349,8 +1415,8 @@ export class VolleyballGame implements MiniGameInstance {
       player.vz = player.steerZ * scale * MOVE_SPEED;
       player.x = clamp(
         player.x + player.vx * deltaSec,
-        -COURT_HALF_WIDTH + VB_PLAYER_BODY_RADIUS,
-        COURT_HALF_WIDTH - VB_PLAYER_BODY_RADIUS,
+        -COURT_HALF_WIDTH - VB_SIDELINE_OUT_PAD,
+        COURT_HALF_WIDTH + VB_SIDELINE_OUT_PAD,
       );
       player.z = clamp(
         player.z + player.vz * deltaSec,
@@ -1454,8 +1520,8 @@ export class VolleyballGame implements MiniGameInstance {
         const side = teamSideSign(player.teamId);
         player.x = clamp(
           player.x,
-          -COURT_HALF_WIDTH + VB_PLAYER_BODY_RADIUS,
-          COURT_HALF_WIDTH - VB_PLAYER_BODY_RADIUS,
+          -COURT_HALF_WIDTH - VB_SIDELINE_OUT_PAD,
+          COURT_HALF_WIDTH + VB_SIDELINE_OUT_PAD,
         );
         player.z = clamp(
           player.z,
@@ -1553,6 +1619,11 @@ export class VolleyballGame implements MiniGameInstance {
     shotAim: { x: number; z: number } | null,
   ): boolean {
     if (this.phase !== 'serve' && this.phase !== 'rally') {
+      return false;
+    }
+
+    // 發球階段只有當前 server 能打
+    if (this.phase === 'serve' && player.id !== this.servingPlayerId) {
       return false;
     }
 
@@ -1683,7 +1754,7 @@ export class VolleyballGame implements MiniGameInstance {
     const isOpponentSide = Boolean(
       local && earlyOwner && earlyOwner.teamId !== local.teamId,
     );
-    const yGate = isOpponentSide ? 0.55 : 0.85;
+    const yGate = isOpponentSide ? 0.78 : 0.85;
 
     if (this.ball.y > yGate || this.ball.vy >= 0) {
       return;
@@ -1716,11 +1787,6 @@ export class VolleyballGame implements MiniGameInstance {
 
       // 對手側已用更低 yGate；這裡再卡嚴格 hitbox（探針 close 約 y=0.45 仍要過）
       if (!vbCanHitBall(owner, this.ball, 'bump', { profile: 'cpu' })) {
-        return;
-      }
-
-      // 人都到位了幾乎都救；探針模式關掉隨機
-      if (!this.debugProbeActive && Math.random() < 0.05) {
         return;
       }
     }
@@ -1822,6 +1888,8 @@ export class VolleyballGame implements MiniGameInstance {
 
     if (wasServe) {
       record.serves += 1;
+      this.lastServerByTeam[player.teamId] = player.id;
+      this.servingPlayerId = player.id;
       this.pushMatchEvent('serve', player.id, player.teamId);
       this.phase = 'rally';
       this.serveLockMs = 450;
@@ -1875,30 +1943,14 @@ export class VolleyballGame implements MiniGameInstance {
       return;
     }
 
-    // 一般球不鎖死；難球／邊角／接殺才偶發漏
+    // 一般球不鎖死；只剩「落地前極短＋人還很遠」極偶發漏
     const distToLand = land
       ? Math.hypot(owner.x - land.x, owner.z - land.z)
       : 0;
     const isLateAndFar = landTimeSec != null
-      && landTimeSec < 0.22
-      && distToLand > 2.9;
-    const nearSideline = land
-      ? Math.abs(land.x) > COURT_HALF_WIDTH - 1.8
-        || Math.abs(land.z) > COURT_HALF_DEPTH - 1.8
-      : false;
-    const vsSpike = this.lastHit?.kind === 'spike';
-
-    let missRate = isLateAndFar ? 0.12 : 0;
-
-    if (nearSideline) {
-      missRate += 0.04;
-    }
-
-    if (vsSpike) {
-      missRate += 0.06;
-    }
-
-    missRate = clamp(missRate, 0, 0.25);
+      && landTimeSec < 0.12
+      && distToLand > 4.0;
+    const missRate = isLateAndFar ? 0.02 : 0;
 
     this.opponentMissOwnerId = Math.random() < missRate ? owner.id : null;
   }
@@ -1911,7 +1963,7 @@ export class VolleyballGame implements MiniGameInstance {
 
   /**
    * 無瞄準過網球落點。
-   * easy：對手 CPU 打給本機時略準，但不再往腳下送分。
+   * easy：對手 CPU 打給本機時略準，但不再往腳下送分；落點維持場內。
    */
   private pickOpenOpponentLandSpot(
     side: number,
@@ -1919,13 +1971,19 @@ export class VolleyballGame implements MiniGameInstance {
     defenders: Array<{ x: number; z: number }>,
     easy = false,
   ): { x: number; z: number } {
-    const xLimit = COURT_HALF_WIDTH - 0.65;
+    // 殺球再內縮，避免無瞄準常出界
+    const xLimit = kind === 'spike'
+      ? COURT_HALF_WIDTH - 1.4
+      : COURT_HALF_WIDTH - 0.65;
+    const maxDepth = kind === 'spike'
+      ? COURT_HALF_DEPTH - 1.2
+      : COURT_HALF_DEPTH - 0.55;
 
-    // 略準：偶爾往人附近，但多數仍拉開
+    // 略準：偶爾往人附近，多數打空檔／邊線內側
     if (easy) {
-      if (defenders.length > 0 && Math.random() < 0.35) {
+      if (defenders.length > 0 && Math.random() < 0.15) {
         const target = defenders[Math.floor(Math.random() * defenders.length)]!;
-        const depth = 3.4 + Math.random() * 2.2;
+        const depth = Math.min(3.4 + Math.random() * 2.2, maxDepth);
 
         return {
           x: clamp(target.x + (Math.random() - 0.5) * 2.2, -xLimit, xLimit),
@@ -1934,14 +1992,14 @@ export class VolleyballGame implements MiniGameInstance {
       }
 
       return {
-        x: clamp((Math.random() - 0.5) * xLimit * 1.6, -xLimit, xLimit),
-        z: this.opponentLandZ(side, 3.6 + Math.random() * 2.8),
+        x: clamp((Math.random() - 0.5) * 2 * xLimit, -xLimit, xLimit),
+        z: this.opponentLandZ(side, Math.min(3.8 + Math.random() * 2.4, maxDepth)),
       };
     }
 
     const xs = [-xLimit, -xLimit * 0.7, -xLimit * 0.35, xLimit * 0.35, xLimit * 0.7, xLimit];
     const depths = kind === 'spike'
-      ? [3.6, 4.8, 6.2, 7.4, 8.6]
+      ? [3.6, 4.8, 6.2, 7.0]
       : kind === 'serve'
         ? [3.4, 4.6, 5.8, 7.2]
         : [3.2, 4.4, 5.8, 7.0, 8.2];
@@ -1951,7 +2009,7 @@ export class VolleyballGame implements MiniGameInstance {
 
     for (const x of xs) {
       for (const depth of depths) {
-        const z = this.opponentLandZ(side, depth);
+        const z = this.opponentLandZ(side, Math.min(depth, maxDepth));
         let score = 8;
 
         if (defenders.length > 0) {
@@ -1960,8 +2018,11 @@ export class VolleyballGame implements MiniGameInstance {
           );
         }
 
-        // 邊角略加分，鼓勵拉開
-        score += Math.abs(x) / xLimit * 0.35;
+        // 非 easy 殺球不加「越邊越好」；一般擊球才略鼓勵拉開
+        if (kind !== 'spike') {
+          score += Math.abs(x) / xLimit * 0.35;
+        }
+
         candidates.push({ x, z, score });
       }
     }
@@ -2042,9 +2103,10 @@ export class VolleyballGame implements MiniGameInstance {
     flightSec: number,
     loft: number,
     targetZOverride?: number,
-    options?: { fast?: boolean },
+    options?: { fast?: boolean; forceInBounds?: boolean },
   ): void {
     const fast = Boolean(options?.fast);
+    const forceInBounds = Boolean(options?.forceInBounds);
     const oppClear = NET_THICKNESS + 2.2;
     const outPad = 2.8;
     // 殺球：剛過網頂即可（比一般墊球低），但仍要穩過網帶
@@ -2066,8 +2128,11 @@ export class VolleyballGame implements MiniGameInstance {
     this.ball.vy = (VB_BALL_RADIUS - startY) / duration + 0.5 * GRAVITY * duration + Math.max(0, loft);
 
     let targetZ = targetZOverride ?? this.opponentLandZ(side, landDepth);
-    const aimOut = Math.abs(targetX) > COURT_HALF_WIDTH
-      || Math.abs(targetZ) > COURT_HALF_DEPTH;
+    let aimOut = !forceInBounds
+      && (
+        Math.abs(targetX) > COURT_HALF_WIDTH
+        || Math.abs(targetZ) > COURT_HALF_DEPTH
+      );
 
     if (aimOut) {
       // 故意／瞄到界外：保留出界落點，只限最大場外距離
@@ -2264,7 +2329,8 @@ export class VolleyballGame implements MiniGameInstance {
           0.3 + Math.random() * 0.06,
           0.28 + Math.random() * 0.16,
           spot.z,
-          spikeOpts,
+          // 對手／隊友 CPU 無瞄準殺球：強制場內
+          { ...spikeOpts, forceInBounds: true },
         );
       }
 
@@ -2421,7 +2487,14 @@ export class VolleyballGame implements MiniGameInstance {
       this.scoreB += 1;
     }
 
+    const prevServing = this.servingTeam;
     this.servingTeam = scoringTeam;
+
+    if (scoringTeam !== prevServing) {
+      this.servingPlayerId = this.pickSideOutServer(scoringTeam);
+    }
+    // 連得：servingPlayerId 維持不變
+
     this.ball.active = false;
     this.ball.vx = 0;
     this.ball.vy = 0;
@@ -2540,7 +2613,7 @@ export class VolleyballGame implements MiniGameInstance {
   }
 
   private beginCrownAward(): void {
-    this.winnerTeam = this.scoreA >= SCORE_TO_WIN ? 'a' : 'b';
+    this.winnerTeam = this.scoreA > this.scoreB ? 'a' : 'b';
     this.phase = 'crownAward';
     this.crownAwardStartedAt = this.elapsedMs;
     this.scoringTeam = null;

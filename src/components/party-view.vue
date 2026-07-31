@@ -13,6 +13,10 @@ import type { ArenaBumpSnapshot } from '@/minigames/arena-bump/arena-bump';
 import { ARENA_BUMP_ID } from '@/minigames/arena-bump/arena-bump-id';
 import ArenaBumpPlay from '@/minigames/arena-bump/arena-bump-play.vue';
 import { arenaBumpCopy } from '@/minigames/arena-bump/locales/zh-TW';
+import type { BouncyBombSnapshot } from '@/minigames/bouncy-bomb';
+import { BOUNCY_BOMB_ID } from '@/minigames/bouncy-bomb/bouncy-bomb-id';
+import BouncyBombPlay from '@/minigames/bouncy-bomb/bouncy-bomb-play.vue';
+import { bouncyBombCopy } from '@/minigames/bouncy-bomb/locales/zh-TW';
 import { mashButtonCopy } from '@/minigames/mash-button/locales/zh-TW';
 import { ROCK_PAPER_SCISSORS_ID } from '@/minigames/rock-paper-scissors';
 import type { RockPaperScissorsSnapshot } from '@/minigames/rock-paper-scissors';
@@ -43,6 +47,10 @@ const props = defineProps<{
   rpsSnapshot: RockPaperScissorsSnapshot | null;
   arenaBumpSnapshot: ArenaBumpSnapshot | null;
   volleyballSnapshot: VolleyballSnapshot | null;
+  bouncyBombSnapshot: BouncyBombSnapshot | null;
+  introReadyCount: number;
+  introReadyTotal: number;
+  hasLocalIntroReady: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -66,6 +74,14 @@ const emit = defineEmits<{
     bump: boolean;
     set: boolean;
     spike: boolean;
+    aimX?: number | null;
+    aimZ?: number | null;
+  }];
+  bouncyBomb: [value: {
+    x: number;
+    y: number;
+    jump: boolean;
+    throwBomb: boolean;
     aimX?: number | null;
     aimZ?: number | null;
   }];
@@ -160,8 +176,14 @@ const isArenaBumpGame = computed(() => props.gameId === ARENA_BUMP_ID);
 
 const isVolleyballGame = computed(() => props.gameId === VOLLEYBALL_ID);
 
+const isBouncyBombGame = computed(() => props.gameId === BOUNCY_BOMB_ID);
+
 const showRoundOutcomes = computed(
-  () => isRpsGame.value || isArenaBumpGame.value || isVolleyballGame.value,
+  () =>
+    isRpsGame.value
+    || isArenaBumpGame.value
+    || isVolleyballGame.value
+    || isBouncyBombGame.value,
 );
 
 const roundResultAutoHint = computed(() => {
@@ -171,6 +193,10 @@ const roundResultAutoHint = computed(() => {
 
   if (isVolleyballGame.value) {
     return volleyballCopy.autoNextRoundHint;
+  }
+
+  if (isBouncyBombGame.value) {
+    return bouncyBombCopy.autoNextRoundHint;
   }
 
   return rpsCopy.autoNextRoundHint;
@@ -250,6 +276,7 @@ watch(
   () =>
     Boolean(props.arenaBumpSnapshot?.isCrownCeremony)
     || Boolean(props.volleyballSnapshot?.isCrownCeremony)
+    || Boolean(props.bouncyBombSnapshot?.isCrownCeremony)
     || Boolean(props.rpsSnapshot?.isCrownCeremony),
   (isCeremony, wasCeremony) => {
     if (isCeremony && !wasCeremony) {
@@ -289,6 +316,14 @@ onScopeDispose(() => {
       @volleyball="emit('volleyball', $event)"
     />
 
+    <BouncyBombPlay
+      v-else-if="phase === 'miniGamePlay' && isBouncyBombGame && bouncyBombSnapshot"
+      :key="'bouncy-bomb-play'"
+      :snapshot="bouncyBombSnapshot"
+      :round-index="roundIndex"
+      @bouncy-bomb="emit('bouncyBomb', $event)"
+    />
+
     <template v-else>
       <div class="flex flex-col gap-lg party-view__body">
       <header
@@ -312,7 +347,10 @@ onScopeDispose(() => {
         :game-id="gameId"
         :round-label="roundLabel"
         :is-sudden-death="isSuddenDeath"
-        @start="emit('startIntroGame')"
+        :ready-count="introReadyCount"
+        :ready-total="introReadyTotal"
+        :has-local-ready="hasLocalIntroReady"
+        @ready="emit('startIntroGame')"
       />
 
       <section
