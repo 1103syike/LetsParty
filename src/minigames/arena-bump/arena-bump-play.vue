@@ -391,6 +391,7 @@ onBeforeUnmount(() => {
             v-for="row in hudPlayers"
             :key="row.participant.id"
             class="arena-hud__card"
+            :data-chat-anchor="row.participant.id"
             :class="[
               hudCardClass(row.participant.color),
               {

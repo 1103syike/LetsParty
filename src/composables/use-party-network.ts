@@ -1,6 +1,7 @@
 import { ref, shallowRef } from 'vue';
 
 import { PeerRoomSession } from '@/common/peer/peer-room-session';
+import { usePartyChat } from '@/composables/use-party-chat';
 import { usePartyStore } from '@/stores/party-store';
 import type { AnimalId } from '@/types/animal';
 import type { PlayerInput } from '@/types/player-input';
@@ -28,9 +29,26 @@ let sessionActionHandler: SessionActionHandler | null = null;
 
 export function usePartyNetwork() {
   const partyStore = usePartyStore();
+  const chat = usePartyChat();
 
   function broadcastRoom(): void {
     peerSession.value?.broadcastRoomSnapshot(partyStore.roomSnapshot);
+  }
+
+  function ingestChatMessage(message: {
+    id: string;
+    participantId: string;
+    displayName: string;
+    text: string;
+    sentAt: number;
+  }): void {
+    chat.appendMessage({
+      id: message.id,
+      participantId: message.participantId,
+      displayName: message.displayName,
+      text: message.text,
+      sentAt: message.sentAt,
+    });
   }
 
   function handleHostMessage(peerId: string, message: PeerMessage): void {
@@ -65,6 +83,12 @@ export function usePartyNetwork() {
 
     if (message.type === PEER_MESSAGE_TYPES.SESSION_ACTION) {
       sessionActionHandler?.(message.action, message.participantId);
+      return;
+    }
+
+    if (message.type === PEER_MESSAGE_TYPES.CHAT_MESSAGE) {
+      ingestChatMessage(message);
+      peerSession.value?.broadcast(message);
     }
   }
 
@@ -93,6 +117,11 @@ export function usePartyNetwork() {
     if (message.type === PEER_MESSAGE_TYPES.SESSION_SNAPSHOT) {
       remoteSession.value = message.snapshot;
       partyStore.markRemotePartyStarted();
+      return;
+    }
+
+    if (message.type === PEER_MESSAGE_TYPES.CHAT_MESSAGE) {
+      ingestChatMessage(message);
     }
   }
 
@@ -167,6 +196,7 @@ export function usePartyNetwork() {
   async function stopNetworking(): Promise<void> {
     hostPeerIdByGuestId.clear();
     remoteSession.value = null;
+    chat.clearChat();
 
     if (peerSession.value) {
       await peerSession.value.destroy();
@@ -284,6 +314,50 @@ export function usePartyNetwork() {
     });
   }
 
+  function sendChatMessage(rawText: string): boolean {
+    const localId = partyStore.localParticipantId;
+    const displayName = partyStore.localParticipant?.displayName?.trim() || '玩家';
+
+    if (!localId) {
+      return false;
+    }
+
+    const id = chat.createMessageId();
+    const sentAt = Date.now();
+    const entry = chat.appendMessage({
+      id,
+      participantId: localId,
+      displayName,
+      text: rawText,
+      sentAt,
+    });
+
+    if (!entry) {
+      return false;
+    }
+
+    if (partyStore.isTestMode) {
+      return true;
+    }
+
+    const payload = {
+      type: PEER_MESSAGE_TYPES.CHAT_MESSAGE,
+      id: entry.id,
+      participantId: entry.participantId,
+      displayName: entry.displayName,
+      text: entry.text,
+      sentAt: entry.sentAt,
+    } as const;
+
+    if (partyStore.isHost) {
+      peerSession.value?.broadcast(payload);
+      return true;
+    }
+
+    peerSession.value?.broadcast(payload);
+    return true;
+  }
+
   function publishSessionSnapshot(
     build: (viewerParticipantId: string | null) => SessionSnapshotPayload,
   ): void {
@@ -324,6 +398,7 @@ export function usePartyNetwork() {
     notifyStartParty,
     sendPlayerInput,
     sendSessionAction,
+    sendChatMessage,
     publishSessionSnapshot,
     setStartPartyHandler,
     setRemoteInputHandler,

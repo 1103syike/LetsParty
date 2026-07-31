@@ -365,6 +365,7 @@ onBeforeUnmount(() => {
           v-for="row in hudPlayers"
           :key="row.participant.id"
           class="bb-hud__card"
+          :data-chat-anchor="row.participant.id"
           :class="{
             'bb-hud__card--local': row.participant.id === localParticipantId,
             'bb-hud__card--dead': !row.alive,

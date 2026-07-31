@@ -15,6 +15,7 @@ export const PEER_MESSAGE_TYPES = {
   PLAYER_INPUT: 'player-input',
   SESSION_SNAPSHOT: 'session-snapshot',
   SESSION_ACTION: 'session-action',
+  CHAT_MESSAGE: 'chat-message',
 } as const;
 
 export type PeerMessageType = (typeof PEER_MESSAGE_TYPES)[keyof typeof PEER_MESSAGE_TYPES];
@@ -100,6 +101,14 @@ export type PeerMessage =
       type: typeof PEER_MESSAGE_TYPES.SESSION_ACTION;
       action: SessionActionKind;
       participantId?: string;
+    }
+  | {
+      type: typeof PEER_MESSAGE_TYPES.CHAT_MESSAGE;
+      id: string;
+      participantId: string;
+      displayName: string;
+      text: string;
+      sentAt: number;
     };
 
 export function isPeerMessage(value: unknown): value is PeerMessage {

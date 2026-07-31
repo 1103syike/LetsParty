@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router';
 
 import PartyRoom from '@/components/party-room.vue';
 import PartyView from '@/components/party-view.vue';
+import RoomChatPanel from '@/components/room-chat-panel.vue';
+import RoomSpeechOverlay from '@/components/room-speech-overlay.vue';
 import TestGamePicker from '@/components/test-game-picker.vue';
 import { usePartyBgm } from '@/composables/use-party-bgm';
 import { usePartyNetwork } from '@/composables/use-party-network';
@@ -252,6 +254,9 @@ onBeforeUnmount(() => {
       @start-party="handleStartParty"
       @back-home="handleBackHome"
     />
+
+    <RoomChatPanel />
+    <RoomSpeechOverlay />
   </main>
 </template>
 

@@ -230,6 +230,7 @@ function hudCardClass(color: Participant['color']): string {
             v-for="row in hudPlayers"
             :key="row.participant.id"
             class="rps-hud__card"
+            :data-chat-anchor="row.participant.id"
             :class="[
               hudCardClass(row.participant.color),
               {

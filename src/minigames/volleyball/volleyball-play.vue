@@ -760,6 +760,7 @@ onBeforeUnmount(() => {
             v-for="row in teamARows"
             :key="row.participant.id"
             class="vb-hud__card"
+            :data-chat-anchor="row.participant.id"
             :class="[
               hudCardClass(row.participant.color),
               {
@@ -844,6 +845,7 @@ onBeforeUnmount(() => {
             v-for="row in teamBRows"
             :key="row.participant.id"
             class="vb-hud__card"
+            :data-chat-anchor="row.participant.id"
             :class="[
               hudCardClass(row.participant.color),
               {

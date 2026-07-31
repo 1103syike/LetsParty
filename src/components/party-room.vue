@@ -272,6 +272,7 @@ async function handleCopyRoomCode(): Promise<void> {
           v-for="(seat, index) in seats"
           :key="seat?.id ?? `empty-${index}`"
           class="party-room__seat"
+          :data-chat-anchor="seat?.id"
           :class="{
             'party-room__seat--local': isLocalSeat(seat),
             'party-room__seat--cpu': seat?.kind === 'cpu',

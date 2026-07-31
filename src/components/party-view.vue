@@ -363,6 +363,7 @@ onScopeDispose(() => {
             v-for="participant in partyStore.participants"
             :key="participant.id"
             class="flex items-center justify-between score-row pad-sm"
+            :data-chat-anchor="participant.id"
           >
             <span class="flex items-center gap-sm">
               <span
