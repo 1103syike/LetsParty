@@ -56,6 +56,8 @@ let cameraShakeUntilMs = 0;
 let cameraShakeDurationMs = 280;
 let cameraShakeStrength = 0;
 const cameraShakeOffset = new Vector3(0, 0, 0);
+/** 開局無敵白閃相位 */
+let flashPhase = 0;
 /** 對戰中鎖定在本機動物開局面向背後 */
 const PLAY_CAMERA_BETA = Math.PI / 2.72;
 const PLAY_CAMERA_RADIUS = 11.5;
@@ -170,6 +172,32 @@ function applySnapshot(snapshot: ArenaBumpSnapshot): void {
   }
 }
 
+/** 開局無敵白閃：跟 render 跑，不依賴 snapshot watch 觸發頻率 */
+function updateSpawnFlash(snapshot: ArenaBumpSnapshot): void {
+  flashPhase += 0.22;
+  const flashOn = Math.sin(flashPhase) > 0;
+
+  for (const fighter of snapshot.fighters) {
+    const actor = actors.get(fighter.id);
+
+    if (!actor || !fighter.alive) {
+      continue;
+    }
+
+    const loco = locomotions.get(fighter.id);
+
+    if (loco === 'fallen' || loco === 'ceremony') {
+      continue;
+    }
+
+    if (fighter.isFlashing) {
+      actor.setSubtreeEnabled(flashOn);
+    } else {
+      actor.setSubtreeEnabled(true);
+    }
+  }
+}
+
 function playHitEffects(snapshot: ArenaBumpSnapshot): void {
   if (snapshot.phase !== 'playing') {
     return;
@@ -238,47 +266,64 @@ function updateCameraShake(): void {
   orbitCamera.target.addInPlace(cameraShakeOffset);
 }
 
-function resolveLocalSpawnSlot(): number {
-  if (typeof props.snapshot.localSpawnSlot === 'number' && props.snapshot.localSpawnSlot >= 0) {
-    return props.snapshot.localSpawnSlot;
+/**
+ * 對戰鏡頭：永遠站在本機外側，視線朝台心。
+ * 主角會一直在眼前（畫面近側），換角生成／繞場移動都會跟著轉。
+ */
+function updatePlayCamera(snapshot: ArenaBumpSnapshot): void {
+  if (!orbitCamera) {
+    return;
   }
 
-  const localId = props.snapshot.localPlayerId ?? partyStore.localParticipantId;
-  const fighter = props.snapshot.fighters.find((entry) => entry.id === localId);
-
-  if (fighter) {
-    return fighter.spawnSlot;
+  if (snapshot.phase === 'crownAward' || snapshot.phase === 'finished') {
+    return;
   }
 
-  const index = partyStore.participants.findIndex((participant) => participant.id === localId);
-  return index >= 0 ? index : 0;
-}
+  const localId = snapshot.localPlayerId ?? partyStore.localParticipantId;
+  const local = snapshot.fighters.find((entry) => entry.id === localId);
 
-/** 站在本機動物開局面向的正後方，視線朝台心（動物一開始看的方向） */
-function lockPlayCameraToLocalSpawn(camera: ArcRotateCamera): void {
-  const count = Math.max(partyStore.participants.length, 1);
-  const spawn = getBumpCornerSpawn(resolveLocalSpawnSlot(), count);
-  const behindX = -spawn.facingX;
-  const behindZ = -spawn.facingZ;
+  if (!local) {
+    return;
+  }
+
+  let radialX = local.x;
+  let radialZ = local.z;
+  let radialDist = Math.hypot(radialX, radialZ);
+
+  if (radialDist < 0.45) {
+    // 靠近台心時用面向反方向當外側，避免鏡頭亂跳
+    radialX = -local.facingX;
+    radialZ = -local.facingZ;
+    radialDist = Math.hypot(radialX, radialZ);
+
+    if (radialDist < 0.001) {
+      radialX = 0;
+      radialZ = 1;
+      radialDist = 1;
+    }
+  }
+
+  radialX /= radialDist;
+  radialZ /= radialDist;
+
   const horiz = PLAY_CAMERA_RADIUS * Math.sin(PLAY_CAMERA_BETA);
-  const target = new Vector3(0, PLAY_CAMERA_TARGET_Y, 0);
-
-  camera.inputs.clear();
-  camera.setTarget(target);
-  camera.setPosition(
-    new Vector3(
-      behindX * horiz,
-      PLAY_CAMERA_TARGET_Y + PLAY_CAMERA_RADIUS * Math.cos(PLAY_CAMERA_BETA),
-      behindZ * horiz,
-    ),
+  const height = PLAY_CAMERA_TARGET_Y + PLAY_CAMERA_RADIUS * Math.cos(PLAY_CAMERA_BETA);
+  // 目標略朝本機，主角更穩地落在畫面下方
+  const target = new Vector3(
+    local.x * 0.14,
+    PLAY_CAMERA_TARGET_Y,
+    local.z * 0.14,
   );
 
-  camera.lowerAlphaLimit = camera.alpha;
-  camera.upperAlphaLimit = camera.alpha;
-  camera.lowerBetaLimit = camera.beta;
-  camera.upperBetaLimit = camera.beta;
-  camera.lowerRadiusLimit = camera.radius;
-  camera.upperRadiusLimit = camera.radius;
+  orbitCamera.inputs.clear();
+  orbitCamera.setTarget(target);
+  orbitCamera.setPosition(new Vector3(radialX * horiz, height, radialZ * horiz));
+  orbitCamera.lowerAlphaLimit = orbitCamera.alpha;
+  orbitCamera.upperAlphaLimit = orbitCamera.alpha;
+  orbitCamera.lowerBetaLimit = orbitCamera.beta;
+  orbitCamera.upperBetaLimit = orbitCamera.beta;
+  orbitCamera.lowerRadiusLimit = orbitCamera.radius;
+  orbitCamera.upperRadiusLimit = orbitCamera.radius;
 }
 
 function unlockCameraLimits(camera: ArcRotateCamera): void {
@@ -350,7 +395,32 @@ function updateCeremonyCamera(deltaMs: number): void {
 }
 
 function syncPhase(snapshot: ArenaBumpSnapshot): void {
+  // 下一分重開：清掉摔飛殘留，站回擂台
+  if (
+    (lastPhase === 'pointPause' || lastPhase === 'playing')
+    && snapshot.phase === 'countdown'
+  ) {
+    fallFx?.cancelAll();
+
+    for (const [id, actor] of actors) {
+      const loco = locomotions.get(id);
+
+      if (loco !== 'fallen' && loco !== 'ceremony') {
+        continue;
+      }
+
+      actor.setSubtreeEnabled(true);
+      actor.root.rotation.x = 0;
+      actor.root.rotation.z = 0;
+      actor.root.scaling.setAll(1);
+      actor.holdStandingPose();
+      actor.playIdle();
+      locomotions.set(id, 'idle');
+    }
+  }
+
   if (snapshot.phase === 'crownAward' && lastPhase !== 'crownAward') {
+    fallFx?.cancelAll();
     beginCrownCeremony(snapshot);
   }
 
@@ -439,7 +509,7 @@ const { canvasRef } = useBabylonScene({
     await syncActors(scene);
     activeScene = scene;
     orbitCamera = camera;
-    lockPlayCameraToLocalSpawn(camera);
+    updatePlayCamera(props.snapshot);
     bindStagePointer(scene, camera);
     jumpObserver = scene.onBeforeRenderObservable.add(() => {
       const deltaMs = scene.getEngine().getDeltaTime();
@@ -449,7 +519,9 @@ const { canvasRef } = useBabylonScene({
       }
 
       hitFx?.update();
+      updatePlayCamera(props.snapshot);
       updateCameraShake();
+      updateSpawnFlash(props.snapshot);
 
       if (props.snapshot.phase === 'crownAward') {
         crownCeremony?.update(deltaMs);

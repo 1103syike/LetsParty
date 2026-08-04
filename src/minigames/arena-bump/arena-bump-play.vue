@@ -4,12 +4,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { partyAudio } from '@/common/audio/party-audio';
 import { getBumpCornerSpawn } from '@/common/arena/bump-physics';
 import AnimalModelPreview from '@/components/animal-model-preview.vue';
-import CuteCrownIcon from '@/components/cute-crown-icon.vue';
 import { partyCopy } from '@/locales/zh-TW/party';
 import type { ArenaBumpSnapshot } from '@/minigames/arena-bump/arena-bump';
 import ArenaBumpScene from '@/minigames/arena-bump/arena-bump-scene.vue';
 import { arenaBumpCopy } from '@/minigames/arena-bump/locales/zh-TW';
-import { sortParticipantsByCrown } from '@/party/scoring/crown';
 import { usePartyStore } from '@/stores/party-store';
 import type { Participant } from '@/types/party';
 
@@ -39,10 +37,16 @@ let chargeQueued = false;
 let chargeAim: { x: number; z: number } | null = null;
 let pumpRafId = 0;
 let lastHeardHitSerial = 0;
+let lastScoreFxSerial = 0;
 let finishFxHideTimer = 0;
+let scoreFxHideTimer = 0;
 
 const finishFxVisible = ref(false);
 const finishFxAttackerName = ref('');
+
+const scoreFxVisible = ref(false);
+const scoreFxName = ref('');
+const scoreFxCue = ref('');
 
 watch(
   () => props.snapshot.hitSerial,
@@ -58,7 +62,12 @@ watch(
     );
     partyAudio.playSfx(hasChargeHit ? 'impactHeavy' : 'impact');
 
-    if (!hasFinisher) {
+    // 得分／頒冠期間不蓋最後一擊大字，畫面比較乾淨
+    if (
+      !hasFinisher
+      || props.snapshot.phase === 'pointPause'
+      || props.snapshot.phase === 'crownAward'
+    ) {
       return;
     }
 
@@ -71,7 +80,42 @@ watch(
     window.clearTimeout(finishFxHideTimer);
     finishFxHideTimer = window.setTimeout(() => {
       finishFxVisible.value = false;
-    }, 1600);
+    }, 1200);
+  },
+);
+
+watch(
+  () => props.snapshot.scoreFxSerial,
+  (serial) => {
+    if (!serial || serial === lastScoreFxSerial) {
+      return;
+    }
+
+    lastScoreFxSerial = serial;
+    const winnerId = props.snapshot.pointWinnerId;
+
+    if (!winnerId) {
+      return;
+    }
+
+    const winner = partyStore.participants.find((entry) => entry.id === winnerId);
+    const winnerScore = props.snapshot.fighters.find((fighter) => fighter.id === winnerId)
+      ?.score ?? 0;
+    scoreFxName.value = arenaBumpCopy.scoreFxText
+      .replace('{name}', winner?.displayName ?? '???')
+      .replace('{score}', String(winnerScore))
+      .replace('{goal}', String(props.snapshot.scoreToWin));
+    scoreFxCue.value = winnerScore >= props.snapshot.scoreToWin
+      ? arenaBumpCopy.crownCeremonyTitle
+      : winnerScore === props.snapshot.scoreToWin - 1
+        ? arenaBumpCopy.scoreFxMatchPoint
+        : arenaBumpCopy.scoreFxNext;
+    scoreFxVisible.value = true;
+    finishFxVisible.value = false;
+    window.clearTimeout(scoreFxHideTimer);
+    scoreFxHideTimer = window.setTimeout(() => {
+      scoreFxVisible.value = false;
+    }, 2000);
   },
 );
 
@@ -92,23 +136,42 @@ const roundLabel = computed(() =>
   partyCopy.roundLabel.replace('{round}', String(props.roundIndex)),
 );
 
-/** 瑪利歐派對風：座位固定 1P–4P，皇冠領先者另外標 */
-const hudPlayers = computed(() => {
-  const ranked = sortParticipantsByCrown(partyStore.participants);
-  const leaderId =
-    ranked[0] && ranked[0].crownCount > 0
-      ? ranked[0].id
-      : null;
-  const aliveById = new Map(
-    props.snapshot.fighters.map((fighter) => [fighter.id, fighter.alive]),
-  );
+const isPointPause = computed(() => props.snapshot.phase === 'pointPause');
 
-  return partyStore.participants.map((participant, index) => ({
-    participant,
-    slot: index + 1,
-    isLeader: participant.id === leaderId,
-    isAlive: aliveById.get(participant.id) ?? true,
-  }));
+/** 積分高的排前面；顯示搶三燈號 */
+const hudPlayers = computed(() => {
+  const stateById = new Map(
+    props.snapshot.fighters.map((fighter) => [fighter.id, fighter]),
+  );
+  const scoreToWin = props.snapshot.scoreToWin;
+
+  const rows = partyStore.participants.map((participant, index) => {
+    const state = stateById.get(participant.id);
+    const score = state?.score ?? 0;
+
+    return {
+      participant,
+      orderIndex: index,
+      slot: index + 1,
+      score,
+      scoreLabel: arenaBumpCopy.scoreLabel
+        .replace('{score}', String(score))
+        .replace('{goal}', String(scoreToWin)),
+      scoreLamps: Array.from({ length: scoreToWin }, (_, lamp) => lamp < score),
+      isAlive: state?.alive ?? true,
+      isPointWinner: participant.id === props.snapshot.pointWinnerId,
+    };
+  });
+
+  rows.sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+
+    return left.orderIndex - right.orderIndex;
+  });
+
+  return rows;
 });
 
 const isTimerUrgent = computed(
@@ -132,20 +195,12 @@ const chargeSkillLabel = computed(() => {
 
 const isCountdown = computed(() => props.snapshot.phase === 'countdown');
 
-const showCountdownOverlay = computed(
-  () => isCountdown.value || props.snapshot.showCountdownGo,
+const countdownDisplay = computed(() =>
+  String(props.snapshot.countdownSecondsLeft),
 );
 
-const countdownDisplay = computed(() => {
-  if (props.snapshot.showCountdownGo) {
-    return arenaBumpCopy.countdownGo;
-  }
-
-  return String(props.snapshot.countdownSecondsLeft);
-});
-
 const showStatusChip = computed(() => {
-  if (showCrownCeremony.value || showCountdownOverlay.value) {
+  if (showCrownCeremony.value || isCountdown.value || isPointPause.value) {
     return false;
   }
 
@@ -176,25 +231,6 @@ const crownCeremonyMessage = computed((): string => {
   return arenaBumpCopy.crownCeremonyWinner.replace('{name}', name);
 });
 
-const winnerBannerText = computed(() => {
-  // 頒冠時改走典禮文案，避免中場再蓋一層「最後倖存」
-  if (showCrownCeremony.value) {
-    return '';
-  }
-
-  const winnerId = props.snapshot.winnerId;
-
-  if (!winnerId || props.snapshot.phase !== 'playing') {
-    return '';
-  }
-
-  const name = partyStore.participants.find((participant) => participant.id === winnerId)
-    ?.displayName
-    ?? winnerId;
-
-  return arenaBumpCopy.winnerNamed.replace('{name}', name);
-});
-
 function playerSlotLabel(slot: number): string {
   return arenaBumpCopy.playerSlotLabel.replace('{slot}', String(slot));
 }
@@ -203,7 +239,7 @@ function hudCardClass(color: Participant['color']): string {
   return `arena-hud__card--${color}`;
 }
 
-/** 依鎖定鏡頭（本機開局面向）把螢幕前後左右轉成世界 xz */
+/** 依鏡頭外側鎖定：W 往台心（畫面深處），AD 左右 */
 function readSteer(): { x: number; y: number } {
   let screenX = 0;
   let screenY = 0;
@@ -229,18 +265,47 @@ function readSteer(): { x: number; y: number } {
   }
 
   const localId = partyStore.localParticipantId;
-  const localSpawnSlot = props.snapshot.localSpawnSlot >= 0
-    ? props.snapshot.localSpawnSlot
-    : partyStore.participants.findIndex((participant) => participant.id === localId);
-  const spawn = getBumpCornerSpawn(
-    localSpawnSlot >= 0 ? localSpawnSlot : 0,
-    Math.max(partyStore.participants.length, 1),
-  );
-  // W：朝開局面向（進畫面深處）；D：螢幕右側
-  const forwardX = spawn.facingX;
-  const forwardZ = spawn.facingZ;
-  const rightX = spawn.facingZ;
-  const rightZ = -spawn.facingX;
+  const local = props.snapshot.fighters.find((fighter) => fighter.id === localId);
+  let radialX = 0;
+  let radialZ = 1;
+
+  if (local) {
+    radialX = local.x;
+    radialZ = local.z;
+    let radialDist = Math.hypot(radialX, radialZ);
+
+    if (radialDist < 0.45) {
+      radialX = -local.facingX;
+      radialZ = -local.facingZ;
+      radialDist = Math.hypot(radialX, radialZ);
+    }
+
+    if (radialDist < 0.001) {
+      const spawn = getBumpCornerSpawn(
+        local.spawnSlot,
+        Math.max(partyStore.participants.length, 1),
+      );
+      radialX = -spawn.facingX;
+      radialZ = -spawn.facingZ;
+      radialDist = 1;
+    }
+
+    radialX /= radialDist;
+    radialZ /= radialDist;
+  } else {
+    const spawn = getBumpCornerSpawn(
+      props.snapshot.localSpawnSlot >= 0 ? props.snapshot.localSpawnSlot : 0,
+      Math.max(partyStore.participants.length, 1),
+    );
+    radialX = -spawn.facingX;
+    radialZ = -spawn.facingZ;
+  }
+
+  // 鏡頭在外側：W＝往台心，D＝螢幕右
+  const forwardX = -radialX;
+  const forwardZ = -radialZ;
+  const rightX = -radialZ;
+  const rightZ = radialX;
 
   let x = screenX * rightX + screenY * forwardX;
   let y = screenX * rightZ + screenY * forwardZ;
@@ -354,6 +419,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keyup', onKeyUp);
   window.cancelAnimationFrame(pumpRafId);
   window.clearTimeout(finishFxHideTimer);
+  window.clearTimeout(scoreFxHideTimer);
   chargeAim = null;
   emit('arena', {
     x: 0,
@@ -395,9 +461,9 @@ onBeforeUnmount(() => {
             :class="[
               hudCardClass(row.participant.color),
               {
-                'arena-hud__card--leader': row.isLeader,
                 'arena-hud__card--local': row.participant.id === localParticipantId,
-                'arena-hud__card--fallen': !row.isAlive,
+                'arena-hud__card--fallen': !row.isAlive && !isPointPause && !isCountdown,
+                'arena-hud__card--point-winner': row.isPointWinner,
               },
             ]"
           >
@@ -410,7 +476,7 @@ onBeforeUnmount(() => {
                 />
               </div>
               <span
-                v-if="!row.isAlive"
+                v-if="!row.isAlive && !isPointPause && !isCountdown"
                 class="arena-hud__fallen-stamp font-game"
               >{{ arenaBumpCopy.resultFallen }}</span>
               <span class="arena-hud__slot font-game">{{ playerSlotLabel(row.slot) }}</span>
@@ -424,14 +490,20 @@ onBeforeUnmount(() => {
                   class="arena-hud__you font-game"
                 >{{ arenaBumpCopy.localPlayerTag }}</span>
               </span>
-            </div>
-
-            <div class="arena-hud__crowns">
-              <CuteCrownIcon
-                size="md"
-                :bounce="row.isLeader"
-              />
-              <span class="arena-hud__crown-count font-game">{{ row.participant.crownCount }}</span>
+              <div class="arena-hud__score-row">
+                <span class="arena-hud__score font-game">{{ row.scoreLabel }}</span>
+                <span
+                  class="arena-hud__lamps"
+                  aria-hidden="true"
+                >
+                  <span
+                    v-for="(lit, lampIndex) in row.scoreLamps"
+                    :key="lampIndex"
+                    class="arena-hud__lamp"
+                    :class="{ 'arena-hud__lamp--on': lit }"
+                  />
+                </span>
+              </div>
             </div>
           </li>
         </ul>
@@ -449,22 +521,18 @@ onBeforeUnmount(() => {
       </aside>
 
       <div
-        v-if="showCountdownOverlay"
+        v-if="isCountdown"
         class="arena-bump-play__countdown game-chrome"
         aria-live="assertive"
       >
-        <p
-          v-if="isCountdown"
-          class="arena-bump-play__countdown-label font-game"
-        >
+        <p class="arena-bump-play__countdown-label font-game">
           {{ arenaBumpCopy.countdownLabel }}
         </p>
         <p
           :key="countdownDisplay"
           class="arena-bump-play__countdown-value font-game"
           :class="{
-            'arena-bump-play__countdown-value--go': snapshot.showCountdownGo,
-            'arena-bump-play__countdown-value--urgent': isCountdown && snapshot.countdownSecondsLeft <= 2,
+            'arena-bump-play__countdown-value--urgent': snapshot.countdownSecondsLeft <= 2,
           }"
         >
           {{ countdownDisplay }}
@@ -482,7 +550,20 @@ onBeforeUnmount(() => {
       </p>
 
       <div
-        v-if="snapshot.localAlive && !showCrownCeremony && !showCountdownOverlay"
+        v-if="scoreFxVisible && !showCrownCeremony"
+        class="arena-bump-play__score-fx game-chrome"
+        aria-live="polite"
+      >
+        <p class="arena-bump-play__score-fx-title font-game">
+          {{ scoreFxName }}
+        </p>
+        <p class="arena-bump-play__score-fx-cue font-game">
+          {{ scoreFxCue }}
+        </p>
+      </div>
+
+      <div
+        v-if="snapshot.localAlive && !showCrownCeremony && !isCountdown && !isPointPause"
         class="arena-bump-play__skills game-chrome"
       >
         <div class="arena-bump-play__skill arena-bump-play__skill--jump">
@@ -507,20 +588,20 @@ onBeforeUnmount(() => {
       </div>
 
       <p
-        v-if="snapshot.localAlive && !showCrownCeremony && !showCountdownOverlay"
+        v-if="snapshot.localAlive && !showCrownCeremony && !isCountdown && !isPointPause"
         class="arena-bump-play__hint font-game game-chrome"
       >
         {{ arenaBumpCopy.hintMove }}
       </p>
       <p
-        v-else-if="!showCrownCeremony && !snapshot.winnerId && !showCountdownOverlay"
+        v-else-if="!showCrownCeremony && !isCountdown && !isPointPause && !snapshot.localAlive"
         class="arena-bump-play__hint arena-bump-play__hint--spectate font-game game-chrome"
       >
         {{ arenaBumpCopy.spectateHint }}
       </p>
 
       <div
-        v-if="finishFxVisible && !showCrownCeremony"
+        v-if="finishFxVisible && !showCrownCeremony && !isPointPause && !scoreFxVisible"
         class="arena-bump-play__finish-fx font-game game-chrome"
         aria-live="polite"
       >
@@ -557,15 +638,6 @@ onBeforeUnmount(() => {
         <p class="crown-ceremony__message font-game text-title">
           {{ crownCeremonyMessage }}
         </p>
-      </div>
-
-      <div
-        v-else-if="winnerBannerText"
-        class="arena-bump-play__winner font-game game-chrome"
-        aria-live="polite"
-      >
-        <span class="arena-bump-play__winner-kicker">{{ arenaBumpCopy.winnerBanner }}</span>
-        <span class="arena-bump-play__winner-name">{{ winnerBannerText }}</span>
       </div>
     </section>
   </Teleport>
@@ -853,6 +925,10 @@ onBeforeUnmount(() => {
 }
 
 .arena-hud__body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-xs);
   min-width: 0;
 }
 
@@ -861,6 +937,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-bold);
+  line-height: 1;
   color: var(--color-text-heading);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -879,19 +956,42 @@ onBeforeUnmount(() => {
   text-shadow: 1px 1px 0 color-mix(in srgb, var(--color-accent-hover) 55%, transparent);
 }
 
-.arena-hud__crowns {
-  display: inline-flex;
-  flex-direction: column;
+.arena-hud__score-row {
+  display: flex;
   align-items: center;
-  gap: 1px;
-  min-width: 2.25rem;
+  justify-content: space-between;
+  gap: var(--space-sm);
 }
 
-.arena-hud__crown-count {
-  font-size: var(--font-size-2xl);
+.arena-hud__score {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
   line-height: 1;
   color: var(--color-text-heading);
-  text-shadow: 2px 2px 0 color-mix(in srgb, var(--color-warning) 45%, white);
+}
+
+.arena-hud__lamps {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.arena-hud__lamp {
+  width: var(--space-sm);
+  height: var(--space-sm);
+  border-radius: var(--radius-full);
+  border: 2px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-border) 50%, transparent);
+
+  &--on {
+    border-color: var(--hud-tone);
+    background: var(--hud-tone);
+    box-shadow: 0 0 var(--space-xs) color-mix(in srgb, var(--hud-tone) 70%, transparent);
+  }
+}
+
+.arena-hud__card--point-winner {
+  outline: 3px solid var(--color-warning);
 }
 
 .arena-hud__timer {
@@ -1011,15 +1111,6 @@ onBeforeUnmount(() => {
     color: var(--color-text-heading);
     text-shadow: 3px 3px 0 color-mix(in srgb, var(--color-warning) 40%, black);
   }
-
-  &--go {
-    min-width: 10rem;
-    background: color-mix(in srgb, var(--color-success) 78%, white);
-    color: var(--color-text-heading);
-    font-size: clamp(var(--font-size-2xl), 10vw, var(--font-size-3xl));
-    text-shadow: 3px 3px 0 color-mix(in srgb, var(--color-success) 40%, black);
-    animation: arena-countdown-go 0.48s cubic-bezier(0.22, 1.45, 0.36, 1);
-  }
 }
 
 @keyframes arena-countdown-pop {
@@ -1035,23 +1126,6 @@ onBeforeUnmount(() => {
 
   100% {
     transform: scale(1);
-    opacity: 1;
-  }
-}
-
-@keyframes arena-countdown-go {
-  0% {
-    transform: scaleX(1.45) scaleY(0.72);
-    opacity: 0.25;
-  }
-
-  65% {
-    transform: scaleX(0.94) scaleY(1.08);
-    opacity: 1;
-  }
-
-  100% {
-    transform: scaleX(1) scaleY(1);
     opacity: 1;
   }
 }
@@ -1177,58 +1251,40 @@ onBeforeUnmount(() => {
   }
 }
 
-.arena-bump-play__winner {
+.arena-bump-play__score-fx {
   position: absolute;
-  top: 42%;
+  top: 18%;
   left: 50%;
-  z-index: 5;
+  z-index: 9;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: var(--space-sm);
-  min-width: min(18rem, 78vw);
-  padding: var(--space-lg) var(--space-xl);
-  border: 4px solid var(--color-on-accent);
-  border-radius: var(--radius-lg);
-  background: linear-gradient(
-    160deg,
-    color-mix(in srgb, var(--color-warning) 35%, white) 0%,
-    color-mix(in srgb, var(--color-surface-solid) 96%, white) 55%,
-    white 100%
-  );
-  box-shadow: 0 var(--space-md) 0 color-mix(in srgb, var(--color-text-heading) 28%, transparent);
-  transform: translate(-50%, -50%);
+  transform: translateX(-50%);
   pointer-events: none;
-  animation: arena-bump-winner-in 0.48s cubic-bezier(0.22, 1.35, 0.36, 1);
 }
 
-.arena-bump-play__winner-kicker {
-  padding: var(--space-xs) var(--space-md);
-  border: 2px solid color-mix(in srgb, var(--color-warning) 55%, white);
+.arena-bump-play__score-fx-title {
+  margin: 0;
+  padding: var(--space-sm) var(--space-lg);
   border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--color-warning) 28%, white);
-  color: var(--color-text-heading);
+  border: 3px solid var(--color-warning);
+  background: color-mix(in srgb, var(--color-surface-solid) 92%, transparent);
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-bold);
+  line-height: 1;
+  color: var(--color-warning);
+  -webkit-text-stroke: 1px var(--color-text-heading);
+  paint-order: stroke fill;
+  animation: arena-countdown-pop 0.55s cubic-bezier(0.22, 1.4, 0.36, 1) both;
+}
+
+.arena-bump-play__score-fx-cue {
+  margin: 0;
   font-size: var(--font-size-md);
-  letter-spacing: 0.12em;
-}
-
-.arena-bump-play__winner-name {
+  font-weight: var(--font-weight-bold);
+  line-height: 1;
   color: var(--color-text-heading);
-  font-size: clamp(var(--font-size-xl), 5.5vw, var(--font-size-2xl));
-  text-align: center;
-  text-shadow: 2px 2px 0 color-mix(in srgb, var(--color-warning) 40%, white);
-}
-
-@keyframes arena-bump-winner-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -32%) scale(0.84);
-  }
-
-  to {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
 }
 
 .arena-bump-play__finish-fx {

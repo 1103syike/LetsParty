@@ -72,6 +72,29 @@ export interface BumpBody {
   jumpCooldownMs: number;
   /** >0：被大力撞擊打飛中，不吃邊緣減速 */
   finisherIgnoreEdgeMs: number;
+  /** 開局無敵結束時間（performance.now） */
+  invulnerableUntilMs: number;
+}
+
+export function isBumpInvulnerable(
+  body: BumpBody,
+  nowMs = performance.now(),
+): boolean {
+  return body.alive && body.invulnerableUntilMs > nowMs;
+}
+
+export function grantBumpSpawnInvuln(
+  bodies: BumpBody[],
+  durationMs: number,
+  nowMs = performance.now(),
+): void {
+  const until = nowMs + durationMs;
+
+  for (const body of bodies) {
+    if (body.alive) {
+      body.invulnerableUntilMs = until;
+    }
+  }
 }
 
 export interface CpuBumpIntent {
@@ -196,6 +219,7 @@ export function placeBumpBodiesAtCorners(bodies: BumpBody[]): void {
     body.jumpMsLeft = 0;
     body.jumpCooldownMs = 0;
     body.finisherIgnoreEdgeMs = 0;
+    body.invulnerableUntilMs = 0;
   });
 }
 
@@ -221,6 +245,7 @@ export function createBumpBodies(ids: string[]): BumpBody[] {
       jumpMsLeft: 0,
       jumpCooldownMs: 0,
       finisherIgnoreEdgeMs: 0,
+      invulnerableUntilMs: 0,
     };
   });
 }
@@ -407,6 +432,11 @@ export function resolveChargeSweeps(
         continue;
       }
 
+      // 開局無敵：不吃衝撞掃擊
+      if (isBumpInvulnerable(victim)) {
+        continue;
+      }
+
       const dx = victim.x - attacker.x;
       const dz = victim.z - attacker.z;
       const dist = Math.hypot(dx, dz);
@@ -479,27 +509,41 @@ export function resolveBumpCollisions(
       b.x += nx * overlap * (aMass / massSum);
       b.z += nz * overlap * (aMass / massSum);
 
+      const aInvuln = isBumpInvulnerable(a);
+      const bInvuln = isBumpInvulnerable(b);
+
       // 衝撞命中（掃擊沒打到時的補刀）
       if (a.isCharging && !b.isCharging) {
-        resolveChargeHit(a, b, nx, nz, hits, isFinisherRound);
+        if (!bInvuln) {
+          resolveChargeHit(a, b, nx, nz, hits, isFinisherRound);
+        }
         continue;
       }
 
       if (b.isCharging && !a.isCharging) {
-        resolveChargeHit(b, a, -nx, -nz, hits, isFinisherRound);
+        if (!aInvuln) {
+          resolveChargeHit(b, a, -nx, -nz, hits, isFinisherRound);
+        }
         continue;
       }
 
       if (a.isCharging && b.isCharging) {
-        // 互撞：雙方大力彈開
+        // 互撞：雙方大力彈開（無敵方只推開、不吃硬擊退）
         a.isCharging = false;
         b.isCharging = false;
-        applyKnockback(a, -nx, -nz, 14, BUMP_CHARGE_STUN_MS * 0.7, 1.4);
-        applyKnockback(b, nx, nz, 14, BUMP_CHARGE_STUN_MS * 0.7, 1.4);
-        a.finisherIgnoreEdgeMs = BUMP_CHARGE_IGNORE_EDGE_MS * 0.6;
-        b.finisherIgnoreEdgeMs = BUMP_CHARGE_IGNORE_EDGE_MS * 0.6;
-        pushHit(hits, a, b, 'charge');
-        pushHit(hits, b, a, 'charge');
+
+        if (!aInvuln) {
+          applyKnockback(a, -nx, -nz, 14, BUMP_CHARGE_STUN_MS * 0.7, 1.4);
+          a.finisherIgnoreEdgeMs = BUMP_CHARGE_IGNORE_EDGE_MS * 0.6;
+          pushHit(hits, b, a, 'charge');
+        }
+
+        if (!bInvuln) {
+          applyKnockback(b, nx, nz, 14, BUMP_CHARGE_STUN_MS * 0.7, 1.4);
+          b.finisherIgnoreEdgeMs = BUMP_CHARGE_IGNORE_EDGE_MS * 0.6;
+          pushHit(hits, a, b, 'charge');
+        }
+
         continue;
       }
 
@@ -523,17 +567,21 @@ export function resolveBumpCollisions(
 
       // 有明顯撞擊時：被撞的一方沿法線往後彈開（手感重點）
       if (aIntoB > 1.4 && aIntoB >= bIntoA) {
-        const strength = Math.min(BUMP_BUMP_KNOCKBACK, 4.5 + aIntoB * 0.85);
-        applyKnockback(b, nx, nz, strength, 260);
-        a.vx *= 0.55;
-        a.vz *= 0.55;
-        pushHit(hits, a, b, 'bump');
+        if (!bInvuln) {
+          const strength = Math.min(BUMP_BUMP_KNOCKBACK, 4.5 + aIntoB * 0.85);
+          applyKnockback(b, nx, nz, strength, 260);
+          a.vx *= 0.55;
+          a.vz *= 0.55;
+          pushHit(hits, a, b, 'bump');
+        }
       } else if (bIntoA > 1.4) {
-        const strength = Math.min(BUMP_BUMP_KNOCKBACK, 4.5 + bIntoA * 0.85);
-        applyKnockback(a, -nx, -nz, strength, 260);
-        b.vx *= 0.55;
-        b.vz *= 0.55;
-        pushHit(hits, b, a, 'bump');
+        if (!aInvuln) {
+          const strength = Math.min(BUMP_BUMP_KNOCKBACK, 4.5 + bIntoA * 0.85);
+          applyKnockback(a, -nx, -nz, strength, 260);
+          b.vx *= 0.55;
+          b.vz *= 0.55;
+          pushHit(hits, b, a, 'bump');
+        }
       }
 
       const midX = (a.x + b.x) * 0.5;

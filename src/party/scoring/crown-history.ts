@@ -35,3 +35,23 @@ export function getCrownHistoryRoundCount(history: CrownHistory): number {
 
   return Math.max(0, maxLength - 1);
 }
+
+/**
+ * 測試用：刻意做出多段同分，方便驗走勢圖頭像堆疊。
+ * 最終約略：P1 最高、P2/P3 並列、P4 較低。
+ */
+export function createTiedCrownHistoryDemo(participants: Participant[]): CrownHistory {
+  const demos: number[][] = [
+    [0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6],
+    [0, 0, 1, 1, 2, 2, 3, 4, 4, 5, 5],
+    [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5],
+    [0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 3],
+  ];
+  const history: CrownHistory = {};
+
+  participants.forEach((participant, index) => {
+    history[participant.id] = [...(demos[index] ?? demos[demos.length - 1]!)];
+  });
+
+  return history;
+}

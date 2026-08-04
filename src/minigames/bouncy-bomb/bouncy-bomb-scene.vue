@@ -170,6 +170,7 @@ function bindCourtPointer(scene: Scene): void {
       || props.snapshot.phase === 'finished'
       || props.snapshot.phase === 'teamReveal'
       || props.snapshot.phase === 'countdown'
+      || props.snapshot.phase === 'pointPause'
       || props.snapshot.localRespawnActive
     ) {
       return;
@@ -317,7 +318,14 @@ function syncPhase(snapshot: BouncyBombSnapshot): void {
     startCrownCeremony(snapshot);
   }
 
-  if (orbitCamera && (snapshot.phase === 'playing' || snapshot.phase === 'countdown')) {
+  if (
+    orbitCamera
+    && (
+      snapshot.phase === 'playing'
+      || snapshot.phase === 'countdown'
+      || snapshot.phase === 'pointPause'
+    )
+  ) {
     applyFixedSideCamera(orbitCamera, snapshot.localTeamId);
   }
 }

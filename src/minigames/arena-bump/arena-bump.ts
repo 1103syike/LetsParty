@@ -7,7 +7,6 @@ import {
   createBumpBodies,
   createCpuBumpBrain,
   placeBumpBodiesAtCorners,
-  rankBumpBodies,
   resolveArenaWinnerId,
   resolveBumpCollisions,
   resolveChargeSweeps,
@@ -24,14 +23,23 @@ import type { Participant } from '@/types/party';
 import type { PlayerInput } from '@/types/player-input';
 
 const COUNTDOWN_MS = 5000;
+/** 下一分開場倒數稍短 */
+const BETWEEN_COUNTDOWN_MS = 3000;
 const PLAY_DURATION_MS = 50000;
-/** 落地後再等多久才進頒冠／結算 */
+const SCORE_TO_WIN = 3;
+const POINT_PAUSE_MS = 2400;
+/** 落地後再等多久進得分暫停 */
 const AFTER_FALL_SETTLE_MS = 1000;
-/** 剩一人：等甩飛落地 + 再停 1 秒 */
+/** 剩一人：等甩飛落地 + 再停 */
 const END_WHEN_ONE_LEFT_MS = ACTOR_KNOCKBACK_FALL_DURATION_MS + AFTER_FALL_SETTLE_MS;
-const CROWN_AWARD_DURATION_MS = 3400;
+const CROWN_AWARD_DURATION_MS = 5200;
 
-export type ArenaBumpPhase = 'countdown' | 'playing' | 'crownAward' | 'finished';
+export type ArenaBumpPhase =
+  | 'countdown'
+  | 'playing'
+  | 'pointPause'
+  | 'crownAward'
+  | 'finished';
 
 export interface ArenaBumpFighterSnapshot {
   id: string;
@@ -48,14 +56,17 @@ export interface ArenaBumpFighterSnapshot {
   isCharging: boolean;
   isJumping: boolean;
   chargeReady: boolean;
+  /** 搶三累積分 */
+  score: number;
+  /** 開局無敵白閃（倒數中） */
+  invulnerable: boolean;
+  isFlashing: boolean;
 }
 
 export interface ArenaBumpSnapshot {
   phase: ArenaBumpPhase;
   /** 開局倒數剩餘秒數（僅 countdown；其餘為 0） */
   countdownSecondsLeft: number;
-  /** 倒數結束後短暫顯示「開始！」 */
-  showCountdownGo: boolean;
   secondsLeft: number;
   aliveCount: number;
   fighters: ArenaBumpFighterSnapshot[];
@@ -69,7 +80,12 @@ export interface ArenaBumpSnapshot {
   /** 遞增序號：場景用來看有沒有新撞擊要播特效 */
   hitSerial: number;
   hits: BumpHitEvent[];
-  /** 結算／頒冠：最後倖存／超時勝者 */
+  scoreToWin: number;
+  /** 本分勝者（pointPause／頒冠） */
+  pointWinnerId: string | null;
+  pointPauseMsLeft: number;
+  scoreFxSerial: number;
+  /** 整場搶三最終勝者（頒冠） */
   winnerId: string | null;
   isCrownCeremony: boolean;
   crownWinnerIds: string[];
@@ -83,13 +99,17 @@ export class ArenaBumpGame implements MiniGameInstance {
 
   private readonly cpuBrains = new Map<string, CpuBumpBrain>();
 
-  private readonly localPlayerId: string | null;
+  private readonly scores = new Map<string, number>();
 
-  private readonly skipOpeningCountdown: boolean;
+  private readonly localPlayerId: string | null;
 
   private phase: ArenaBumpPhase = 'countdown';
 
   private elapsedMs = 0;
+
+  private phaseStartedAt = 0;
+
+  private countdownDurationMs = COUNTDOWN_MS;
 
   private fallOrderCursor = 1;
 
@@ -99,7 +119,11 @@ export class ArenaBumpGame implements MiniGameInstance {
 
   private crownAwardDurationMs = CROWN_AWARD_DURATION_MS;
 
-  private winnerId: string | null = null;
+  private pointWinnerId: string | null = null;
+
+  private matchWinnerId: string | null = null;
+
+  private scoreFxSerial = 0;
 
   private hitSerial = 0;
 
@@ -108,34 +132,39 @@ export class ArenaBumpGame implements MiniGameInstance {
   constructor(
     participants: Participant[],
     localPlayerId: string | null = null,
-    options: MiniGameCreateOptions = {},
+    _options: MiniGameCreateOptions = {},
   ) {
     this.bodies = createBumpBodies(participants.map((participant) => participant.id));
     this.localPlayerId = localPlayerId;
-    this.skipOpeningCountdown = options.skipOpeningCountdown ?? false;
 
     for (const body of this.bodies) {
       this.steers.set(body.id, { x: 0, z: 0 });
+      this.scores.set(body.id, 0);
     }
   }
 
   start(): void {
-    // 略過倒數時直接開戰，並跳過「開始！」閃示窗（elapsedMs >= 700）
-    this.phase = this.skipOpeningCountdown ? 'playing' : 'countdown';
-    this.elapsedMs = this.skipOpeningCountdown ? 700 : 0;
+    this.phase = 'countdown';
+    this.elapsedMs = 0;
+    this.phaseStartedAt = 0;
+    this.countdownDurationMs = COUNTDOWN_MS;
     this.fallOrderCursor = 1;
     this.endDelayMs = 0;
     this.crownAwardStartedAt = 0;
     this.crownAwardDurationMs = CROWN_AWARD_DURATION_MS;
-    this.winnerId = null;
+    this.pointWinnerId = null;
+    this.matchWinnerId = null;
+    this.scoreFxSerial = 0;
     this.hitSerial = 0;
     this.recentHits = [];
     this.cpuBrains.clear();
-    placeBumpBodiesAtCorners(this.bodies);
 
     for (const body of this.bodies) {
+      this.scores.set(body.id, 0);
       this.steers.set(body.id, { x: 0, z: 0 });
     }
+
+    this.resetBodiesForBout();
   }
 
   onPlayerInput(playerId: string, input: PlayerInput): void {
@@ -228,9 +257,30 @@ export class ArenaBumpGame implements MiniGameInstance {
     this.elapsedMs += deltaMs;
 
     if (this.phase === 'countdown') {
-      if (this.elapsedMs >= COUNTDOWN_MS) {
+      if (this.elapsedMs - this.phaseStartedAt >= this.countdownDurationMs) {
         this.phase = 'playing';
-        this.elapsedMs = 0;
+        this.phaseStartedAt = this.elapsedMs;
+        this.endDelayMs = 0;
+
+        for (const body of this.bodies) {
+          body.invulnerableUntilMs = 0;
+        }
+      }
+
+      return;
+    }
+
+    if (this.phase === 'pointPause') {
+      if (this.elapsedMs - this.phaseStartedAt >= POINT_PAUSE_MS) {
+        if (this.matchWinnerId) {
+          this.beginCrownAward();
+        } else {
+          this.resetBodiesForBout();
+          this.pointWinnerId = null;
+          this.countdownDurationMs = BETWEEN_COUNTDOWN_MS;
+          this.phase = 'countdown';
+          this.phaseStartedAt = this.elapsedMs;
+        }
       }
 
       return;
@@ -244,6 +294,11 @@ export class ArenaBumpGame implements MiniGameInstance {
       return;
     }
 
+    if (this.phase !== 'playing') {
+      return;
+    }
+
+    const playElapsed = this.elapsedMs - this.phaseStartedAt;
     const deltaSec = Math.min(0.05, deltaMs / 1000);
     const frameHits: BumpHitEvent[] = [];
 
@@ -267,16 +322,14 @@ export class ArenaBumpGame implements MiniGameInstance {
     }
 
     const aliveCount = countAliveBodies(this.bodies);
-    const timeUp = this.elapsedMs >= PLAY_DURATION_MS;
+    const timeUp = playElapsed >= PLAY_DURATION_MS;
 
     if (aliveCount <= 1 || timeUp) {
       this.endDelayMs += deltaMs;
-
-      // 剩一人：等被踢飛的人落地趴著再開頒冠；超時也稍停一下
       const settleDelay = aliveCount <= 1 ? END_WHEN_ONE_LEFT_MS : AFTER_FALL_SETTLE_MS;
 
       if (this.endDelayMs >= settleDelay) {
-        this.beginCrownAward();
+        this.beginPointPause();
       }
     } else {
       this.endDelayMs = 0;
@@ -284,7 +337,25 @@ export class ArenaBumpGame implements MiniGameInstance {
   }
 
   getRankings(): string[] {
-    return rankBumpBodies(this.bodies);
+    return [...this.bodies]
+      .sort((left, right) => {
+        const scoreDiff = (this.scores.get(right.id) ?? 0) - (this.scores.get(left.id) ?? 0);
+
+        if (scoreDiff !== 0) {
+          return scoreDiff;
+        }
+
+        if (left.alive !== right.alive) {
+          return left.alive ? -1 : 1;
+        }
+
+        if (!left.alive && !right.alive) {
+          return left.fallOrder - right.fallOrder;
+        }
+
+        return left.id.localeCompare(right.id);
+      })
+      .map((body) => body.id);
   }
 
   getCrownAwards(_rankings: string[] = this.getRankings()): Record<string, number> {
@@ -294,21 +365,18 @@ export class ArenaBumpGame implements MiniGameInstance {
       awards[body.id] = 0;
     }
 
-    const winnerId = this.winnerId ?? resolveArenaWinnerId(this.bodies);
-
-    if (winnerId) {
-      awards[winnerId] = 1;
+    if (this.matchWinnerId) {
+      awards[this.matchWinnerId] = 1;
     }
 
     return awards;
   }
 
   getRoundResults(): Record<string, 'win' | 'lose'> {
-    const winnerId = this.winnerId ?? resolveArenaWinnerId(this.bodies);
     const results: Record<string, 'win' | 'lose'> = {};
 
     for (const body of this.bodies) {
-      results[body.id] = body.id === winnerId ? 'win' : 'lose';
+      results[body.id] = body.id === this.matchWinnerId ? 'win' : 'lose';
     }
 
     return results;
@@ -318,7 +386,7 @@ export class ArenaBumpGame implements MiniGameInstance {
     const scores: Record<string, number> = {};
 
     for (const body of this.bodies) {
-      scores[body.id] = body.alive ? 1 : 0;
+      scores[body.id] = this.scores.get(body.id) ?? 0;
     }
 
     return scores;
@@ -327,40 +395,56 @@ export class ArenaBumpGame implements MiniGameInstance {
   getGameSnapshot(viewerId?: string | null): ArenaBumpSnapshot {
     const viewPlayerId = viewerId === undefined ? this.localPlayerId : viewerId;
     const local = this.bodies.find((body) => body.id === viewPlayerId);
-    const winnerId = this.phase === 'playing' && countAliveBodies(this.bodies) > 1
-      ? null
-      : (this.winnerId ?? resolveArenaWinnerId(this.bodies));
-    const countdownSecondsLeft = this.phase === 'countdown'
-      ? Math.max(1, Math.ceil((COUNTDOWN_MS - this.elapsedMs) / 1000))
+    const countdownElapsed = this.phase === 'countdown'
+      ? this.elapsedMs - this.phaseStartedAt
+      : this.countdownDurationMs;
+    const playElapsed = this.phase === 'playing'
+      ? this.elapsedMs - this.phaseStartedAt
       : 0;
-    const secondsLeft = this.phase === 'playing'
-      ? Math.max(0, Math.ceil((PLAY_DURATION_MS - this.elapsedMs) / 1000))
-      : Math.ceil(PLAY_DURATION_MS / 1000);
+    const pointPauseElapsed = this.phase === 'pointPause'
+      ? this.elapsedMs - this.phaseStartedAt
+      : 0;
+
+    const winnerId = this.phase === 'pointPause'
+      ? this.pointWinnerId
+      : this.phase === 'crownAward' || this.phase === 'finished'
+        ? this.matchWinnerId
+        : null;
 
     return {
       phase: this.phase,
-      countdownSecondsLeft,
-      showCountdownGo: this.phase === 'playing' && this.elapsedMs < 700,
-      secondsLeft,
+      countdownSecondsLeft: this.phase === 'countdown'
+        ? Math.max(1, Math.ceil((this.countdownDurationMs - countdownElapsed) / 1000))
+        : 0,
+      secondsLeft: this.phase === 'playing'
+        ? Math.max(0, Math.ceil((PLAY_DURATION_MS - playElapsed) / 1000))
+        : Math.ceil(PLAY_DURATION_MS / 1000),
       aliveCount: countAliveBodies(this.bodies),
-      fighters: this.bodies.map((body) => ({
-        id: body.id,
-        x: body.x,
-        z: body.z,
-        vx: body.vx,
-        vz: body.vz,
-        facingX: body.facingX,
-        facingZ: body.facingZ,
-        spawnSlot: body.spawnSlot,
-        alive: body.alive,
-        fallOrder: body.fallOrder,
-        isCharging: body.isCharging,
-        isJumping: body.jumpMsLeft > 0,
-        chargeReady: body.chargeCooldownMs <= 0
-          && !body.isCharging
-          && body.stunMsLeft <= 0
-          && body.jumpMsLeft <= 0,
-      })),
+      fighters: this.bodies.map((body) => {
+        const isFlashing = this.phase === 'countdown';
+
+        return {
+          id: body.id,
+          x: body.x,
+          z: body.z,
+          vx: body.vx,
+          vz: body.vz,
+          facingX: body.facingX,
+          facingZ: body.facingZ,
+          spawnSlot: body.spawnSlot,
+          alive: body.alive,
+          fallOrder: body.fallOrder,
+          isCharging: body.isCharging,
+          isJumping: body.jumpMsLeft > 0,
+          chargeReady: body.chargeCooldownMs <= 0
+            && !body.isCharging
+            && body.stunMsLeft <= 0
+            && body.jumpMsLeft <= 0,
+          score: this.scores.get(body.id) ?? 0,
+          invulnerable: isFlashing,
+          isFlashing,
+        };
+      }),
       localPlayerId: viewPlayerId,
       localSpawnSlot: local?.spawnSlot ?? 0,
       localAlive: local?.alive ?? false,
@@ -375,9 +459,15 @@ export class ArenaBumpGame implements MiniGameInstance {
         : 0,
       hitSerial: this.hitSerial,
       hits: this.recentHits,
+      scoreToWin: SCORE_TO_WIN,
+      pointWinnerId: this.phase === 'pointPause' ? this.pointWinnerId : null,
+      pointPauseMsLeft: this.phase === 'pointPause'
+        ? Math.max(0, POINT_PAUSE_MS - pointPauseElapsed)
+        : 0,
+      scoreFxSerial: this.scoreFxSerial,
       winnerId,
       isCrownCeremony: this.phase === 'crownAward',
-      crownWinnerIds: winnerId ? [winnerId] : [],
+      crownWinnerIds: this.matchWinnerId ? [this.matchWinnerId] : [],
       crownAwardDurationMs: this.crownAwardDurationMs,
     };
   }
@@ -393,19 +483,80 @@ export class ArenaBumpGame implements MiniGameInstance {
     this.recentHits = [];
   }
 
-  private beginCrownAward(): void {
-    this.winnerId = resolveArenaWinnerId(this.bodies);
-    this.crownAwardStartedAt = this.elapsedMs;
-    this.crownAwardDurationMs = CROWN_AWARD_DURATION_MS;
-    this.phase = 'crownAward';
+  private beginPointPause(): void {
+    if (this.phase === 'pointPause' || this.phase === 'crownAward' || this.phase === 'finished') {
+      return;
+    }
 
-    // 頒冠時凍結全員速度
+    const boutWinnerId = resolveArenaWinnerId(this.bodies);
+
+    if (!boutWinnerId) {
+      // 理論上不該沒人；保底重開一分
+      this.resetBodiesForBout();
+      this.countdownDurationMs = BETWEEN_COUNTDOWN_MS;
+      this.phase = 'countdown';
+      this.phaseStartedAt = this.elapsedMs;
+      return;
+    }
+
+    const nextScore = (this.scores.get(boutWinnerId) ?? 0) + 1;
+    this.scores.set(boutWinnerId, nextScore);
+    this.pointWinnerId = boutWinnerId;
+    this.scoreFxSerial += 1;
+    this.phase = 'pointPause';
+    this.phaseStartedAt = this.elapsedMs;
+    this.endDelayMs = 0;
+
     for (const body of this.bodies) {
       body.vx = 0;
       body.vz = 0;
       body.isCharging = false;
       this.steers.set(body.id, { x: 0, z: 0 });
     }
+
+    if (nextScore >= SCORE_TO_WIN) {
+      this.matchWinnerId = boutWinnerId;
+    }
+  }
+
+  private beginCrownAward(): void {
+    this.matchWinnerId = this.matchWinnerId
+      ?? this.pointWinnerId
+      ?? resolveArenaWinnerId(this.bodies);
+    this.crownAwardStartedAt = this.elapsedMs;
+    this.crownAwardDurationMs = CROWN_AWARD_DURATION_MS;
+    this.phase = 'crownAward';
+    this.pointWinnerId = null;
+
+    for (const body of this.bodies) {
+      body.vx = 0;
+      body.vz = 0;
+      body.isCharging = false;
+      this.steers.set(body.id, { x: 0, z: 0 });
+    }
+  }
+
+  private resetBodiesForBout(): void {
+    this.fallOrderCursor = 1;
+    this.endDelayMs = 0;
+    this.recentHits = [];
+
+    for (const body of this.bodies) {
+      body.alive = true;
+      body.fallOrder = 0;
+      body.vx = 0;
+      body.vz = 0;
+      body.isCharging = false;
+      body.chargeMsLeft = 0;
+      body.stunMsLeft = 0;
+      body.jumpMsLeft = 0;
+      body.jumpCooldownMs = 0;
+      body.finisherIgnoreEdgeMs = 0;
+      body.invulnerableUntilMs = 0;
+      this.steers.set(body.id, { x: 0, z: 0 });
+    }
+
+    placeBumpBodiesAtCorners(this.bodies);
   }
 
   private applySteerInput(playerId: string, x: number, y: number): void {

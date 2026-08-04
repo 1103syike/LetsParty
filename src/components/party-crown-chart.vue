@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
-import AnimalAvatarIcon from '@/components/animal-avatar-icon.vue';
+import AnimalModelPreview from '@/components/animal-model-preview.vue';
 import { partyCopy } from '@/locales/zh-TW/party';
 import { getCrownHistoryRoundCount } from '@/party/scoring/crown-history';
 import type { CrownHistory } from '@/party/scoring/crown-history';
@@ -14,14 +14,13 @@ const props = defineProps<{
 
 const CHART_WIDTH = 340;
 const CHART_HEIGHT = 196;
-const PADDING = { top: 22, right: 36, bottom: 30, left: 28 };
+const PADDING = { top: 22, right: 56, bottom: 30, left: 28 };
 /** 一格（一回合）畫完要多久，瑪利歐派對感 */
 const SEGMENT_DURATION_MS = 580;
-/** 頭像垂直最小間距（約一顆頭） */
-const MIN_SEP_Y = 18;
-/** 過近時水平略扇出，避免完全重疊 */
-const FAN_SEP_X = 6;
-const SOFT_SEP_PASSES = 3;
+/** 嚴格同分並排間距（約一顆頭寬） */
+const FAN_SEP_X = 32;
+/** 線尖 X 夠近才算「同一點」同分 */
+const TIE_X = 18;
 
 interface ChartTip {
   participant: Participant;
@@ -68,14 +67,18 @@ const xLabels = computed(() => {
   return labels;
 });
 
-/** 線尖黏錨點後，過近再軟推開 */
+/** 頭像跟真實線尖；只有嚴格同分且幾乎同點才水平並排 */
 const tipMarkers = computed(() => {
   const rawTips = props.participants.map((participant) => tipFor(participant));
-  return applySoftSeparation(rawTips);
+  return placeTipMarkers(rawTips);
 });
 
 function playerColor(color: Participant['color']): string {
   return `var(--color-${color})`;
+}
+
+function seatIndexOf(participantId: string): number {
+  return seatOrder.value.get(participantId) ?? 0;
 }
 
 function timelineFor(participantId: string): number[] {
@@ -139,90 +142,95 @@ function tipFor(participant: Participant): ChartTip {
   };
 }
 
-function compareTipOrder(left: ChartTip, right: ChartTip): number {
-  // 皇冠多 → 圖上較高（y 較小）；同分用固定座位序，避免互搶
-  if (Math.abs(left.crowns - right.crowns) > 0.001) {
-    return right.crowns - left.crowns;
+function compareBySeat(left: ChartTip, right: ChartTip): number {
+  return seatIndexOf(left.participant.id) - seatIndexOf(right.participant.id);
+}
+
+/** 同一皇冠 bucket 內，依 X 接近切成「同點」子組 */
+function clusterByNearbyX(group: ChartTip[]): ChartTip[][] {
+  if (group.length === 0) {
+    return [];
   }
 
-  return (seatOrder.value.get(left.participant.id) ?? 0)
-    - (seatOrder.value.get(right.participant.id) ?? 0);
+  const sorted = [...group].sort((left, right) => {
+    if (Math.abs(left.x - right.x) > 0.01) {
+      return left.x - right.x;
+    }
+
+    return compareBySeat(left, right);
+  });
+
+  const clusters: ChartTip[][] = [];
+  let current: ChartTip[] = [sorted[0]!];
+
+  for (let index = 1; index < sorted.length; index += 1) {
+    const tip = sorted[index]!;
+    const prev = current[current.length - 1]!;
+
+    if (Math.abs(tip.x - prev.x) <= TIE_X) {
+      current.push(tip);
+      continue;
+    }
+
+    clusters.push(current);
+    current = [tip];
+  }
+
+  clusters.push(current);
+  return clusters;
 }
 
 /**
- * 黏在真實線尖上；兩頭像垂直過近才對半推開。
- * 連續、無分桶，不會因進錯組瞬移。
+ * 預設貼真實線尖；Math.round(crowns) 相同且 X 接近才水平並排。
  */
-function applySoftSeparation(tips: ChartTip[]): ChartTip[] {
+function placeTipMarkers(tips: ChartTip[]): ChartTip[] {
   if (tips.length <= 1) {
     return tips;
   }
 
-  const items = tips.map((tip) => ({
-    tip,
-    x: tip.x,
-    y: tip.y,
-  }));
-
-  items.sort((left, right) => compareTipOrder(left.tip, right.tip));
-
-  for (let pass = 0; pass < SOFT_SEP_PASSES; pass += 1) {
-    for (let i = 0; i < items.length; i += 1) {
-      for (let j = i + 1; j < items.length; j += 1) {
-        const upper = items[i]!;
-        const lower = items[j]!;
-        const gap = lower.y - upper.y;
-
-        if (gap >= MIN_SEP_Y) {
-          continue;
-        }
-
-        const push = (MIN_SEP_Y - gap) * 0.5;
-        upper.y -= push;
-        lower.y += push;
-      }
-    }
-  }
-
-  // 同分簇：依排序一次水平扇出（不進迭代，避免累加飄走）
-  let clusterStart = 0;
-
-  while (clusterStart < items.length) {
-    let clusterEnd = clusterStart + 1;
-
-    while (
-      clusterEnd < items.length
-      && Math.abs(items[clusterEnd]!.tip.crowns - items[clusterStart]!.tip.crowns) < 0.05
-    ) {
-      clusterEnd += 1;
-    }
-
-    const count = clusterEnd - clusterStart;
-
-    if (count > 1) {
-      const mid = (count - 1) / 2;
-
-      for (let index = 0; index < count; index += 1) {
-        items[clusterStart + index]!.x += (index - mid) * FAN_SEP_X;
-      }
-    }
-
-    clusterStart = clusterEnd;
-  }
-
+  const chartLeft = PADDING.left;
+  const chartRight = CHART_WIDTH - PADDING.right;
   const chartTop = PADDING.top;
   const chartBottom = CHART_HEIGHT - PADDING.bottom;
 
-  return items
-    .map((item) => ({
-      ...item.tip,
-      x: item.x,
-      y: Math.min(chartBottom, Math.max(chartTop, item.y)),
-    }))
-    .sort((left, right) =>
-      (seatOrder.value.get(left.participant.id) ?? 0)
-      - (seatOrder.value.get(right.participant.id) ?? 0),
-    );
+  const byCrown = new Map<number, ChartTip[]>();
+
+  for (const tip of tips) {
+    const bucket = Math.round(tip.crowns);
+    const list = byCrown.get(bucket) ?? [];
+    list.push(tip);
+    byCrown.set(bucket, list);
+  }
+
+  const placed = new Map<string, ChartTip>();
+
+  for (const group of byCrown.values()) {
+    for (const cluster of clusterByNearbyX(group)) {
+      if (cluster.length === 1) {
+        const alone = cluster[0]!;
+        placed.set(alone.participant.id, { ...alone });
+        continue;
+      }
+
+      const ranked = [...cluster].sort(compareBySeat);
+      const mid = (ranked.length - 1) / 2;
+      const sharedX = ranked.reduce((sum, tip) => sum + tip.x, 0) / ranked.length;
+      const sharedY = ranked.reduce((sum, tip) => sum + tip.y, 0) / ranked.length;
+
+      ranked.forEach((tip, rank) => {
+        const offsetX = (rank - mid) * FAN_SEP_X;
+        placed.set(tip.participant.id, {
+          ...tip,
+          x: Math.min(chartRight, Math.max(chartLeft, sharedX + offsetX)),
+          y: Math.min(chartBottom, Math.max(chartTop, sharedY)),
+        });
+      });
+    }
+  }
+
+  return tips
+    .map((tip) => placed.get(tip.participant.id) ?? tip)
+    .sort(compareBySeat);
 }
 
 function polylinePoints(participantId: string): string {
@@ -273,6 +281,7 @@ function avatarStyle(tip: ChartTip): Record<string, string> {
     left: `${(tip.x / CHART_WIDTH) * 100}%`,
     top: `${(tip.y / CHART_HEIGHT) * 100}%`,
     borderColor: playerColor(tip.participant.color),
+    zIndex: String(20 - seatIndexOf(tip.participant.id)),
   };
 }
 
@@ -398,9 +407,10 @@ watch(
           class="party-crown-chart__avatar"
           :style="avatarStyle(tip)"
         >
-          <AnimalAvatarIcon
+          <AnimalModelPreview
+            compact
             :animal-id="tip.participant.animalId"
-            size="sm"
+            :player-color="tip.participant.color"
           />
         </div>
       </div>
@@ -481,16 +491,23 @@ watch(
 
 .party-crown-chart__avatar {
   position: absolute;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
+  overflow: hidden;
+  width: 2.25rem;
+  height: 2.25rem;
   border: 3px solid;
   border-radius: var(--radius-full);
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 2px 0 rgba(92, 77, 130, 0.14);
   transform: translate(-50%, -50%);
+
+  :deep(.animal-preview__canvas) {
+    width: 100%;
+    height: 100%;
+  }
+
+  :deep(.animal-preview__canvas--compact) {
+    height: 100%;
+  }
 }
 
 .party-crown-chart__legend {

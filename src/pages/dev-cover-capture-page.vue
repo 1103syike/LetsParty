@@ -211,7 +211,6 @@ function prepareArena(participants: Participant[], slide: number): void {
       ...base,
       phase: 'countdown',
       countdownSecondsLeft: 3,
-      showCountdownGo: false,
       secondsLeft: 60,
       aliveCount: fighters.length,
       fighters,
@@ -228,7 +227,6 @@ function prepareArena(participants: Participant[], slide: number): void {
       ...base,
       phase: 'playing',
       countdownSecondsLeft: 0,
-      showCountdownGo: true,
       secondsLeft: 60,
       aliveCount: fighters.length,
       fighters,
@@ -255,7 +253,6 @@ function prepareArena(participants: Participant[], slide: number): void {
     arenaSnapshot.value = {
       ...base,
       phase: 'playing',
-      showCountdownGo: false,
       fighters,
       aliveCount: fighters.length,
       localAlive: true,
@@ -280,7 +277,6 @@ function prepareArena(participants: Participant[], slide: number): void {
     arenaSnapshot.value = {
       ...base,
       phase: 'playing',
-      showCountdownGo: false,
       fighters,
       aliveCount: fighters.length,
       localChargeReady: true,
@@ -327,7 +323,6 @@ function prepareArena(participants: Participant[], slide: number): void {
     arenaSnapshot.value = {
       ...base,
       phase: 'playing',
-      showCountdownGo: false,
       fighters,
       aliveCount: fighters.length,
       localAlive: true,
@@ -351,7 +346,6 @@ function prepareArena(participants: Participant[], slide: number): void {
     arenaSnapshot.value = {
       ...base,
       phase: 'playing',
-      showCountdownGo: false,
       fighters,
       aliveCount: fighters.length,
       localAlive: true,
@@ -384,7 +378,6 @@ function prepareArena(participants: Participant[], slide: number): void {
     arenaSnapshot.value = {
       ...base,
       phase: 'playing',
-      showCountdownGo: false,
       fighters,
       aliveCount: fighters.filter((fighter) => fighter.alive).length,
       localAlive: false,
@@ -407,7 +400,6 @@ function prepareArena(participants: Participant[], slide: number): void {
     arenaSnapshot.value = {
       ...base,
       phase: 'playing',
-      showCountdownGo: false,
       fighters,
       aliveCount: 1,
       localAlive: true,
@@ -429,7 +421,6 @@ function prepareArena(participants: Participant[], slide: number): void {
   arenaSnapshot.value = {
     ...base,
     phase: 'crownAward',
-    showCountdownGo: false,
     fighters,
     aliveCount: 1,
     localAlive: true,

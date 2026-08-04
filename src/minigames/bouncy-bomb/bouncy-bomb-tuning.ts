@@ -12,6 +12,10 @@ export const BB_JUMP_SPEED = 7.4;
 export const BB_GRAVITY_PLAYER = 18;
 
 export const BB_LIVES = 3;
+/** 先搶到這個隊伍分拿皇冠 */
+export const BB_SCORE_TO_WIN = 3;
+/** 一隊全滅得分後的暫停 */
+export const BB_POINT_PAUSE_MS = 2200;
 
 export const BOMB_RADIUS = 0.32;
 export const BOMB_GRAVITY = 18;
@@ -80,7 +84,7 @@ export const INVULN_MS = 1800;
 export const TEAM_REVEAL_MS = 3600;
 export const TEAM_REVEAL_GO_MS = 700;
 export const COUNTDOWN_MS = 1200;
-export const CROWN_AWARD_MS = 3400;
+export const CROWN_AWARD_MS = 6200;
 
 export const PLAYER_COLOR_HEX: Record<string, string> = {
   'player-1': '#e86b8a',

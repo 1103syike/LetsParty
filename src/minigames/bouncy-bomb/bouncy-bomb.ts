@@ -11,6 +11,8 @@ import {
   BB_JUMP_SPEED,
   BB_LIVES,
   BB_MOVE_SPEED,
+  BB_POINT_PAUSE_MS,
+  BB_SCORE_TO_WIN,
   BB_NET_THICKNESS,
   BB_PLAYER_RADIUS,
   BB_TEAMMATE_SEPARATION,
@@ -62,6 +64,7 @@ export type BouncyBombPhase =
   | 'teamReveal'
   | 'countdown'
   | 'playing'
+  | 'pointPause'
   | 'crownAward'
   | 'finished';
 
@@ -78,6 +81,10 @@ export interface BouncyBombPlayerSnapshot {
   /** 依搖桿意圖，不當位移（避免被推開時誤播跑步） */
   isMoving: boolean;
   lives: number;
+  /** 擊殺數（每扣對方一命 +1） */
+  kills: number;
+  /** 死亡數（每被扣一命 +1） */
+  deaths: number;
   alive: boolean;
   /** 重生倒數中（不可動、不可被炸） */
   isRespawning: boolean;
@@ -116,6 +123,7 @@ export interface BouncyBombAimPreview {
 
 export interface BouncyBombBlastHit {
   victimId: string;
+  victimTeamId: BouncyBombTeamId;
   eliminated: boolean;
 }
 
@@ -124,7 +132,16 @@ export interface BouncyBombBlastEvent {
   z: number;
   colorHex: string;
   attackerId: string;
+  attackerTeamId: BouncyBombTeamId;
   hits: BouncyBombBlastHit[];
+}
+
+export interface BouncyBombKillFx {
+  attackerId: string;
+  attackerTeamId: BouncyBombTeamId;
+  victimId: string;
+  victimTeamId: BouncyBombTeamId;
+  killCount: number;
 }
 
 export interface BouncyBombSnapshot {
@@ -136,10 +153,15 @@ export interface BouncyBombSnapshot {
   players: BouncyBombPlayerSnapshot[];
   bombs: BouncyBombBombSnapshot[];
   aimPreview: BouncyBombAimPreview | null;
+  scoreA: number;
+  scoreB: number;
+  scoreToWin: number;
   teamRevealMsLeft: number;
   teamRevealProgress: number;
   showTeamRevealGo: boolean;
   countdownMsLeft: number;
+  pointPauseMsLeft: number;
+  scoringTeamId: BouncyBombTeamId | null;
   localRespawnActive: boolean;
   localRespawnMsLeft: number;
   localCooldownMs: number;
@@ -147,10 +169,17 @@ export interface BouncyBombSnapshot {
   localBombsMax: number;
   isCrownCeremony: boolean;
   crownWinnerIds: string[];
+  /** 殺多死少：全場／勝方最有價值 */
+  mvpPlayerId: string | null;
+  /** 敗方（或落後方）最有價值 */
+  svpPlayerId: string | null;
   blastSerial: number;
   blast: BouncyBombBlastEvent | null;
   throwSerial: number;
   hitSerial: number;
+  killFxSerial: number;
+  killFx: BouncyBombKillFx | null;
+  scoreFxSerial: number;
 }
 
 interface CourtPlayer {
@@ -164,6 +193,8 @@ interface CourtPlayer {
   vy: number;
   facingY: number;
   lives: number;
+  kills: number;
+  deaths: number;
   alive: boolean;
   isRespawning: boolean;
   respawnMsLeft: number;
@@ -354,6 +385,12 @@ export class BouncyBombGame implements MiniGameInstance {
 
   private winnerTeam: BouncyBombTeamId | null = null;
 
+  private scoreA = 0;
+
+  private scoreB = 0;
+
+  private scoringTeamId: BouncyBombTeamId | null = null;
+
   private blastSerial = 0;
 
   private blast: BouncyBombBlastEvent | null = null;
@@ -361,6 +398,12 @@ export class BouncyBombGame implements MiniGameInstance {
   private throwSerial = 0;
 
   private hitSerial = 0;
+
+  private killFxSerial = 0;
+
+  private killFx: BouncyBombKillFx | null = null;
+
+  private scoreFxSerial = 0;
 
   constructor(
     participants: Participant[],
@@ -391,42 +434,22 @@ export class BouncyBombGame implements MiniGameInstance {
     this.elapsedMs = 0;
     this.phaseStartedAt = 0;
     this.winnerTeam = null;
+    this.scoreA = 0;
+    this.scoreB = 0;
+    this.scoringTeamId = null;
     this.bombs = [];
     this.blast = null;
     this.blastSerial = 0;
     this.throwSerial = 0;
     this.hitSerial = 0;
+    this.killFx = null;
+    this.killFxSerial = 0;
+    this.scoreFxSerial = 0;
+    this.resetCourtState({ resetKills: true });
 
-    for (const player of this.players) {
-      const spawn = spawnCenter(player.teamId);
-      const slotOffset = player.slot === 0 ? -1.4 : 1.4;
-      player.x = spawn.x + slotOffset;
-      player.z = spawn.z;
-      player.y = 0;
-      player.vy = 0;
-      player.lives = BB_LIVES;
-      player.alive = true;
-      player.isRespawning = false;
-      player.respawnMsLeft = 0;
-      player.respawnX = null;
-      player.respawnZ = null;
-      player.invulnerableUntilMs = 0;
-      player.cooldownMs = 0;
-      player.aimX = null;
-      player.aimZ = null;
-      player.moveX = 0;
-      player.moveZ = 0;
-      player.jumpQueued = false;
-      player.throwQueued = false;
-      player.facingY = teamSideSign(player.teamId) > 0 ? Math.PI : 0;
-      player.cpuTargetX = player.x;
-      player.cpuTargetZ = player.z;
-      player.cpuRetargetMs = 0;
-      player.cpuStickX = 0;
-      player.cpuStickZ = 0;
-      player.cpuThreatBombId = null;
-      player.cpuReactMs = 0;
-      player.cpuWillDodge = false;
+    // 跳過開場直接開戰時，立刻給開局無敵
+    if (this.skipOpening) {
+      this.grantSpawnInvuln();
     }
   }
 
@@ -438,6 +461,7 @@ export class BouncyBombGame implements MiniGameInstance {
     if (
       this.phase === 'teamReveal'
       || this.phase === 'countdown'
+      || this.phase === 'pointPause'
       || this.phase === 'crownAward'
       || this.phase === 'finished'
     ) {
@@ -845,6 +869,18 @@ export class BouncyBombGame implements MiniGameInstance {
       if (this.elapsedMs - this.phaseStartedAt >= COUNTDOWN_MS) {
         this.phase = 'playing';
         this.phaseStartedAt = this.elapsedMs;
+        this.grantSpawnInvuln();
+      }
+      return;
+    }
+
+    if (this.phase === 'pointPause') {
+      if (this.elapsedMs - this.phaseStartedAt >= BB_POINT_PAUSE_MS) {
+        this.resetCourtState({ resetKills: false });
+        this.scoringTeamId = null;
+        this.phase = 'playing';
+        this.phaseStartedAt = this.elapsedMs;
+        this.grantSpawnInvuln();
       }
       return;
     }
@@ -909,7 +945,7 @@ export class BouncyBombGame implements MiniGameInstance {
     const scores: Record<string, number> = {};
 
     for (const player of this.players) {
-      scores[player.id] = player.lives;
+      scores[player.id] = player.teamId === 'a' ? this.scoreA : this.scoreB;
     }
 
     return scores;
@@ -925,6 +961,10 @@ export class BouncyBombGame implements MiniGameInstance {
     const countdownElapsed = this.phase === 'countdown'
       ? this.elapsedMs - this.phaseStartedAt
       : COUNTDOWN_MS;
+    const pointPauseElapsed = this.phase === 'pointPause'
+      ? this.elapsedMs - this.phaseStartedAt
+      : 0;
+    const awards = this.resolveMvpSvp();
 
     return {
       phase: this.phase,
@@ -948,6 +988,8 @@ export class BouncyBombGame implements MiniGameInstance {
           facingY: player.facingY,
           isMoving: Math.hypot(player.moveX, player.moveZ) > 0.08,
           lives: player.lives,
+          kills: player.kills,
+          deaths: player.deaths,
           alive: player.alive,
           isRespawning: player.isRespawning,
           respawnMsLeft: player.respawnMsLeft,
@@ -972,10 +1014,17 @@ export class BouncyBombGame implements MiniGameInstance {
         colorHex: bomb.colorHex,
       })),
       aimPreview: this.buildAimPreview(local),
+      scoreA: this.scoreA,
+      scoreB: this.scoreB,
+      scoreToWin: BB_SCORE_TO_WIN,
       teamRevealMsLeft: Math.max(0, TEAM_REVEAL_MS - revealElapsed),
       teamRevealProgress: clamp(revealElapsed / TEAM_REVEAL_MS, 0, 1),
       showTeamRevealGo: revealElapsed >= TEAM_REVEAL_MS - TEAM_REVEAL_GO_MS,
       countdownMsLeft: Math.max(0, COUNTDOWN_MS - countdownElapsed),
+      pointPauseMsLeft: Math.max(0, BB_POINT_PAUSE_MS - pointPauseElapsed),
+      scoringTeamId: this.phase === 'pointPause' || this.phase === 'crownAward'
+        ? this.scoringTeamId
+        : null,
       localRespawnActive: Boolean(local?.isRespawning),
       localRespawnMsLeft: local?.respawnMsLeft ?? 0,
       localCooldownMs: local?.cooldownMs ?? 0,
@@ -984,15 +1033,16 @@ export class BouncyBombGame implements MiniGameInstance {
         : 0,
       localBombsMax: BOMB_MAX_IN_FLIGHT,
       isCrownCeremony: this.phase === 'crownAward',
-      crownWinnerIds: this.winnerTeam === 'a'
-        ? this.teamAIds
-        : this.winnerTeam === 'b'
-          ? this.teamBIds
-          : [],
+      crownWinnerIds: this.buildCrownWinnerIds(awards.mvpId),
+      mvpPlayerId: awards.mvpId,
+      svpPlayerId: awards.svpId,
       blastSerial: this.blastSerial,
       blast: this.blast,
       throwSerial: this.throwSerial,
       hitSerial: this.hitSerial,
+      killFxSerial: this.killFxSerial,
+      killFx: this.killFx,
+      scoreFxSerial: this.scoreFxSerial,
     };
   }
 
@@ -1019,6 +1069,8 @@ export class BouncyBombGame implements MiniGameInstance {
       vy: 0,
       facingY: teamSideSign(teamId) > 0 ? Math.PI : 0,
       lives: BB_LIVES,
+      kills: 0,
+      deaths: 0,
       alive: true,
       isRespawning: false,
       respawnMsLeft: 0,
@@ -1237,6 +1289,7 @@ export class BouncyBombGame implements MiniGameInstance {
   private explode(bomb: FlyingBomb): void {
     const hits: BouncyBombBlastHit[] = [];
     const clock = nowMs();
+    const attacker = this.players.find((player) => player.id === bomb.ownerId) ?? null;
 
     for (const player of this.players) {
       if (!player.alive || player.isRespawning) {
@@ -1258,7 +1311,24 @@ export class BouncyBombGame implements MiniGameInstance {
       }
 
       const eliminated = this.applyHit(player);
-      hits.push({ victimId: player.id, eliminated });
+      hits.push({
+        victimId: player.id,
+        victimTeamId: player.teamId,
+        eliminated,
+      });
+
+      // 扣一命就算一殺（炸飛重生／陣亡都算）
+      if (attacker) {
+        attacker.kills += 1;
+        this.killFxSerial += 1;
+        this.killFx = {
+          attackerId: attacker.id,
+          attackerTeamId: attacker.teamId,
+          victimId: player.id,
+          victimTeamId: player.teamId,
+          killCount: attacker.kills,
+        };
+      }
     }
 
     this.blastSerial += 1;
@@ -1267,6 +1337,7 @@ export class BouncyBombGame implements MiniGameInstance {
       z: bomb.landZ,
       colorHex: bomb.colorHex,
       attackerId: bomb.ownerId,
+      attackerTeamId: bomb.teamId,
       hits,
     };
 
@@ -1278,6 +1349,7 @@ export class BouncyBombGame implements MiniGameInstance {
   /** @returns 是否陣亡 */
   private applyHit(player: CourtPlayer): boolean {
     player.lives = Math.max(0, player.lives - 1);
+    player.deaths += 1;
 
     if (player.lives <= 0) {
       player.alive = false;
@@ -1318,6 +1390,10 @@ export class BouncyBombGame implements MiniGameInstance {
   }
 
   private checkTeamWipe(): void {
+    if (this.phase !== 'playing') {
+      return;
+    }
+
     const teamAAlive = this.players.some(
       (player) => player.teamId === 'a' && player.alive,
     );
@@ -1329,9 +1405,163 @@ export class BouncyBombGame implements MiniGameInstance {
       return;
     }
 
-    this.winnerTeam = teamAAlive ? 'a' : teamBAlive ? 'b' : 'a';
-    this.phase = 'crownAward';
-    this.phaseStartedAt = this.elapsedMs;
+    const scoringTeam: BouncyBombTeamId = teamAAlive
+      ? 'a'
+      : teamBAlive
+        ? 'b'
+        : 'a';
+
+    if (scoringTeam === 'a') {
+      this.scoreA += 1;
+    } else {
+      this.scoreB += 1;
+    }
+
+    this.scoringTeamId = scoringTeam;
+    this.scoreFxSerial += 1;
     this.bombs = [];
+    this.blast = null;
+
+    const winningScore = scoringTeam === 'a' ? this.scoreA : this.scoreB;
+
+    if (winningScore >= BB_SCORE_TO_WIN) {
+      this.winnerTeam = scoringTeam;
+      this.phase = 'crownAward';
+      this.phaseStartedAt = this.elapsedMs;
+      return;
+    }
+
+    this.phase = 'pointPause';
+    this.phaseStartedAt = this.elapsedMs;
+  }
+
+  /** 開戰／下一分出場：與復活相同的短暫白閃無敵 */
+  private grantSpawnInvuln(): void {
+    const until = nowMs() + INVULN_MS;
+
+    for (const player of this.players) {
+      if (player.alive && !player.isRespawning) {
+        player.invulnerableUntilMs = until;
+      }
+    }
+  }
+
+  /** 開局／下一分：重置位置與生命；擊殺數可選擇保留 */
+  private resetCourtState(options: { resetKills: boolean }): void {
+    this.bombs = [];
+    this.blast = null;
+
+    for (const player of this.players) {
+      const spawn = spawnCenter(player.teamId);
+      const slotOffset = player.slot === 0 ? -1.4 : 1.4;
+      player.x = spawn.x + slotOffset;
+      player.z = spawn.z;
+      player.y = 0;
+      player.vy = 0;
+      player.lives = BB_LIVES;
+      player.alive = true;
+      player.isRespawning = false;
+      player.respawnMsLeft = 0;
+      player.respawnX = null;
+      player.respawnZ = null;
+      player.invulnerableUntilMs = 0;
+      player.cooldownMs = 0;
+      player.aimX = null;
+      player.aimZ = null;
+      player.moveX = 0;
+      player.moveZ = 0;
+      player.jumpQueued = false;
+      player.throwQueued = false;
+      player.facingY = teamSideSign(player.teamId) > 0 ? Math.PI : 0;
+      player.cpuTargetX = player.x;
+      player.cpuTargetZ = player.z;
+      player.cpuRetargetMs = 0;
+      player.cpuStickX = 0;
+      player.cpuStickZ = 0;
+      player.cpuThreatBombId = null;
+      player.cpuReactMs = 0;
+      player.cpuWillDodge = false;
+
+      if (options.resetKills) {
+        player.kills = 0;
+        player.deaths = 0;
+      }
+    }
+  }
+
+  /** 殺多死少優先 */
+  private comparePlayerValue(a: CourtPlayer, b: CourtPlayer): number {
+    if (b.kills !== a.kills) {
+      return b.kills - a.kills;
+    }
+
+    if (a.deaths !== b.deaths) {
+      return a.deaths - b.deaths;
+    }
+
+    return a.slot - b.slot;
+  }
+
+  private pickBestPlayer(candidates: CourtPlayer[]): CourtPlayer | null {
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    return [...candidates].sort((a, b) => this.comparePlayerValue(a, b))[0] ?? null;
+  }
+
+  private resolveMvpSvp(): { mvpId: string | null; svpId: string | null } {
+    // 結算：MVP＝勝方最佳、SVP＝敗方最佳
+    if (this.winnerTeam) {
+      const loserTeam: BouncyBombTeamId = this.winnerTeam === 'a' ? 'b' : 'a';
+      const mvp = this.pickBestPlayer(
+        this.players.filter((player) => player.teamId === this.winnerTeam),
+      );
+      const svp = this.pickBestPlayer(
+        this.players.filter((player) => player.teamId === loserTeam),
+      );
+
+      return { mvpId: mvp?.id ?? null, svpId: svp?.id ?? null };
+    }
+
+    const mvp = this.pickBestPlayer(this.players);
+
+    if (!mvp) {
+      return { mvpId: null, svpId: null };
+    }
+
+    // 進行中：MVP＝全場最佳；SVP＝落後方（平手則取 MVP 對面）最佳
+    const trailingTeam: BouncyBombTeamId = this.scoreA === this.scoreB
+      ? (mvp.teamId === 'a' ? 'b' : 'a')
+      : this.scoreA < this.scoreB
+        ? 'a'
+        : 'b';
+    const svp = this.pickBestPlayer(
+      this.players.filter(
+        (player) => player.teamId === trailingTeam && player.id !== mvp.id,
+      ),
+    ) ?? this.pickBestPlayer(
+      this.players.filter((player) => player.teamId === trailingTeam),
+    );
+
+    return {
+      mvpId: mvp.id,
+      svpId: svp && svp.id !== mvp.id ? svp.id : null,
+    };
+  }
+
+  /** 贏家站位：MVP 放第一個，鏡頭前排置中 */
+  private buildCrownWinnerIds(mvpId: string | null): string[] {
+    if (!this.winnerTeam) {
+      return [];
+    }
+
+    const ids = this.winnerTeam === 'a' ? [...this.teamAIds] : [...this.teamBIds];
+
+    if (!mvpId) {
+      return ids;
+    }
+
+    return [mvpId, ...ids.filter((id) => id !== mvpId)];
   }
 }
