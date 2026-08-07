@@ -63,6 +63,8 @@ let flashPhase = 0;
 const PLAY_CAMERA_BETA = Math.PI / 2.72;
 const PLAY_CAMERA_RADIUS = 11.5;
 const PLAY_CAMERA_TARGET_Y = 0.35;
+/** 視線往台心偏多少（0＝盯角色、1＝盯台心）；偏一點讓本機落在畫面偏下 */
+const PLAY_CAMERA_LOOK_AHEAD = 0.34;
 
 async function syncActors(scene: Scene): Promise<void> {
   const count = partyStore.participants.length;
@@ -304,8 +306,13 @@ function updatePlayCamera(snapshot: ArenaBumpSnapshot): void {
 
   const horiz = PLAY_CAMERA_RADIUS * Math.sin(PLAY_CAMERA_BETA);
   const height = PLAY_CAMERA_TARGET_Y + PLAY_CAMERA_RADIUS * Math.cos(PLAY_CAMERA_BETA);
-  // 視線跟本機（略抬），機位仍停在出生那一側
-  const target = new Vector3(local.x, PLAY_CAMERA_TARGET_Y, local.z);
+  // 視線在本機與台心之間：角色偏下、前方場地比較開
+  const lookT = PLAY_CAMERA_LOOK_AHEAD;
+  const target = new Vector3(
+    local.x * (1 - lookT),
+    PLAY_CAMERA_TARGET_Y,
+    local.z * (1 - lookT),
+  );
   const position = new Vector3(radialX * horiz, height, radialZ * horiz);
 
   orbitCamera.inputs.clear();
