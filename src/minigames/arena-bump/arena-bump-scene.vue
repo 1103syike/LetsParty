@@ -316,8 +316,17 @@ function updatePlayCamera(snapshot: ArenaBumpSnapshot): void {
   const position = new Vector3(radialX * horiz, height, radialZ * horiz);
 
   orbitCamera.inputs.clear();
+  // 先鬆開鎖：否則上一局的 alpha 上下限會把 setPosition 卡回舊角，換邊就跑掉
+  orbitCamera.lowerAlphaLimit = null;
+  orbitCamera.upperAlphaLimit = null;
+  orbitCamera.lowerBetaLimit = null;
+  orbitCamera.upperBetaLimit = null;
+  orbitCamera.lowerRadiusLimit = null;
+  orbitCamera.upperRadiusLimit = null;
+
   orbitCamera.setTarget(target);
   orbitCamera.setPosition(position);
+
   orbitCamera.lowerAlphaLimit = orbitCamera.alpha;
   orbitCamera.upperAlphaLimit = orbitCamera.alpha;
   orbitCamera.lowerBetaLimit = orbitCamera.beta;
