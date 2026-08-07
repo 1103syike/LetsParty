@@ -20,6 +20,7 @@ import { ActorKnockbackFallFx } from '@/common/fx/actor-knockback-fall-fx';
 import { useBabylonScene } from '@/composables/use-babylon-scene';
 import type { ArenaBumpSnapshot } from '@/minigames/arena-bump/arena-bump';
 import { ArenaBumpHitFx } from '@/minigames/arena-bump/arena-bump-hit-fx';
+import { setArenaBumpViewBasis } from '@/minigames/arena-bump/arena-bump-view';
 import { usePartyStore } from '@/stores/party-store';
 
 const props = defineProps<{
@@ -267,8 +268,8 @@ function updateCameraShake(): void {
 }
 
 /**
- * 對戰鏡頭：鎖在本機出生角外側，視線朝台心。
- * 不跟著角色繞場轉——跑到對面也還是從自己那一側看進來。
+ * 對戰鏡頭：機位鎖出生角外側，視線跟著本機。
+ * WASD 讀真實相機前／右軸（arena-bump-view），畫面跟操作才會一致。
  */
 function updatePlayCamera(snapshot: ArenaBumpSnapshot): void {
   if (!orbitCamera) {
@@ -288,7 +289,6 @@ function updatePlayCamera(snapshot: ArenaBumpSnapshot): void {
 
   const fighterCount = Math.max(snapshot.fighters.length, 1);
   const spawn = getBumpCornerSpawn(local.spawnSlot, fighterCount);
-  // 出生點本身就在外側；用 spawn 方位當鏡頭錨點
   let radialX = spawn.x;
   let radialZ = spawn.z;
   let radialDist = Math.hypot(radialX, radialZ);
@@ -304,22 +304,41 @@ function updatePlayCamera(snapshot: ArenaBumpSnapshot): void {
 
   const horiz = PLAY_CAMERA_RADIUS * Math.sin(PLAY_CAMERA_BETA);
   const height = PLAY_CAMERA_TARGET_Y + PLAY_CAMERA_RADIUS * Math.cos(PLAY_CAMERA_BETA);
-  // 目標略朝本機，主角更穩地落在畫面下方（鏡頭方位仍鎖出生側）
-  const target = new Vector3(
-    local.x * 0.14,
-    PLAY_CAMERA_TARGET_Y,
-    local.z * 0.14,
-  );
+  // 視線跟本機（略抬），機位仍停在出生那一側
+  const target = new Vector3(local.x, PLAY_CAMERA_TARGET_Y, local.z);
+  const position = new Vector3(radialX * horiz, height, radialZ * horiz);
 
   orbitCamera.inputs.clear();
   orbitCamera.setTarget(target);
-  orbitCamera.setPosition(new Vector3(radialX * horiz, height, radialZ * horiz));
+  orbitCamera.setPosition(position);
   orbitCamera.lowerAlphaLimit = orbitCamera.alpha;
   orbitCamera.upperAlphaLimit = orbitCamera.alpha;
   orbitCamera.lowerBetaLimit = orbitCamera.beta;
   orbitCamera.upperBetaLimit = orbitCamera.beta;
   orbitCamera.lowerRadiusLimit = orbitCamera.radius;
   orbitCamera.upperRadiusLimit = orbitCamera.radius;
+
+  publishViewBasis(position, target);
+}
+
+/** 水平前＝相機看向目標；右＝世界上叉前（對齊螢幕左右） */
+function publishViewBasis(position: Vector3, target: Vector3): void {
+  let forwardX = target.x - position.x;
+  let forwardZ = target.z - position.z;
+  let forwardDist = Math.hypot(forwardX, forwardZ);
+
+  if (forwardDist < 0.001) {
+    forwardX = 0;
+    forwardZ = -1;
+    forwardDist = 1;
+  }
+
+  forwardX /= forwardDist;
+  forwardZ /= forwardDist;
+  // Babylon 左手：right = up × forward
+  const rightX = forwardZ;
+  const rightZ = -forwardX;
+  setArenaBumpViewBasis(forwardX, forwardZ, rightX, rightZ);
 }
 
 function unlockCameraLimits(camera: ArcRotateCamera): void {

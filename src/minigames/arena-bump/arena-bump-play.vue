@@ -2,11 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { partyAudio } from '@/common/audio/party-audio';
-import { getBumpCornerSpawn } from '@/common/arena/bump-physics';
 import AnimalModelPreview from '@/components/animal-model-preview.vue';
 import { partyCopy } from '@/locales/zh-TW/party';
 import type { ArenaBumpSnapshot } from '@/minigames/arena-bump/arena-bump';
 import ArenaBumpScene from '@/minigames/arena-bump/arena-bump-scene.vue';
+import { getArenaBumpViewBasis } from '@/minigames/arena-bump/arena-bump-view';
 import { arenaBumpCopy } from '@/minigames/arena-bump/locales/zh-TW';
 import { usePartyStore } from '@/stores/party-store';
 import type { Participant } from '@/types/party';
@@ -239,7 +239,7 @@ function hudCardClass(color: Participant['color']): string {
   return `arena-hud__card--${color}`;
 }
 
-/** 依鏡頭外側鎖定：W 往台心（畫面深處），AD 左右 */
+/** 依真實相機前／右軸：W＝畫面深處，AD＝螢幕左右 */
 function readSteer(): { x: number; y: number } {
   let screenX = 0;
   let screenY = 0;
@@ -264,34 +264,7 @@ function readSteer(): { x: number; y: number } {
     return { x: 0, y: 0 };
   }
 
-  // 操作軸對齊「出生側」固定鏡頭，不跟角色繞場轉
-  const localId = partyStore.localParticipantId;
-  const local = props.snapshot.fighters.find((fighter) => fighter.id === localId);
-  const spawnSlot = local?.spawnSlot
-    ?? (props.snapshot.localSpawnSlot >= 0 ? props.snapshot.localSpawnSlot : 0);
-  const spawn = getBumpCornerSpawn(
-    spawnSlot,
-    Math.max(props.snapshot.fighters.length, partyStore.participants.length, 1),
-  );
-  let radialX = spawn.x;
-  let radialZ = spawn.z;
-  let radialDist = Math.hypot(radialX, radialZ);
-
-  if (radialDist < 0.001) {
-    radialX = -spawn.facingX;
-    radialZ = -spawn.facingZ;
-    radialDist = Math.hypot(radialX, radialZ) || 1;
-  }
-
-  radialX /= radialDist;
-  radialZ /= radialDist;
-
-  // 鏡頭在出生外側：W＝往台心，D＝螢幕右
-  const forwardX = -radialX;
-  const forwardZ = -radialZ;
-  const rightX = -radialZ;
-  const rightZ = radialX;
-
+  const { forwardX, forwardZ, rightX, rightZ } = getArenaBumpViewBasis();
   let x = screenX * rightX + screenY * forwardX;
   let y = screenX * rightZ + screenY * forwardZ;
   const mag = Math.hypot(x, y);
