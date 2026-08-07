@@ -267,8 +267,8 @@ function updateCameraShake(): void {
 }
 
 /**
- * 對戰鏡頭：永遠站在本機外側，視線朝台心。
- * 主角會一直在眼前（畫面近側），換角生成／繞場移動都會跟著轉。
+ * 對戰鏡頭：鎖在本機出生角外側，視線朝台心。
+ * 不跟著角色繞場轉——跑到對面也還是從自己那一側看進來。
  */
 function updatePlayCamera(snapshot: ArenaBumpSnapshot): void {
   if (!orbitCamera) {
@@ -286,21 +286,17 @@ function updatePlayCamera(snapshot: ArenaBumpSnapshot): void {
     return;
   }
 
-  let radialX = local.x;
-  let radialZ = local.z;
+  const fighterCount = Math.max(snapshot.fighters.length, 1);
+  const spawn = getBumpCornerSpawn(local.spawnSlot, fighterCount);
+  // 出生點本身就在外側；用 spawn 方位當鏡頭錨點
+  let radialX = spawn.x;
+  let radialZ = spawn.z;
   let radialDist = Math.hypot(radialX, radialZ);
 
-  if (radialDist < 0.45) {
-    // 靠近台心時用面向反方向當外側，避免鏡頭亂跳
-    radialX = -local.facingX;
-    radialZ = -local.facingZ;
-    radialDist = Math.hypot(radialX, radialZ);
-
-    if (radialDist < 0.001) {
-      radialX = 0;
-      radialZ = 1;
-      radialDist = 1;
-    }
+  if (radialDist < 0.001) {
+    radialX = -spawn.facingX;
+    radialZ = -spawn.facingZ;
+    radialDist = Math.hypot(radialX, radialZ) || 1;
   }
 
   radialX /= radialDist;
@@ -308,7 +304,7 @@ function updatePlayCamera(snapshot: ArenaBumpSnapshot): void {
 
   const horiz = PLAY_CAMERA_RADIUS * Math.sin(PLAY_CAMERA_BETA);
   const height = PLAY_CAMERA_TARGET_Y + PLAY_CAMERA_RADIUS * Math.cos(PLAY_CAMERA_BETA);
-  // 目標略朝本機，主角更穩地落在畫面下方
+  // 目標略朝本機，主角更穩地落在畫面下方（鏡頭方位仍鎖出生側）
   const target = new Vector3(
     local.x * 0.14,
     PLAY_CAMERA_TARGET_Y,

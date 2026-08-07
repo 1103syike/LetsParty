@@ -1,3 +1,4 @@
+import type { CrownHistory } from '@/party/scoring/crown-history';
 import type { AnimalId } from '@/types/animal';
 import type { Participant, PartySettings } from '@/types/party';
 import type { PlayerInput } from '@/types/player-input';
@@ -28,6 +29,8 @@ export interface RoomSnapshotPayload {
   roomId: string;
   participants: Participant[];
   settings: PartySettings;
+  /** 皇冠累積時間軸（Guest 結束頁走勢用） */
+  crownHistory: CrownHistory;
   /** Guest 在 roster 裡的 id */
   yourParticipantId?: string;
 }

@@ -11,8 +11,8 @@ export const homeCopy = {
   testModePickGame: '選一個遊戲',
   testModeBackHome: '回首頁',
   testModeBackToPicker: '回選遊戲',
-  testCrownChart: '測試皇冠走勢（同分）',
-  testCrownChartHint: '用假資料看同分頭像會不會抖',
+  testCrownChart: '測試皇冠走勢',
+  testCrownChartHint: '用假資料預覽折線走勢與逐局繪製',
   testCrownChartReplay: '重播動畫',
   testCrownChartClose: '關閉預覽',
 } as const;

@@ -264,44 +264,29 @@ function readSteer(): { x: number; y: number } {
     return { x: 0, y: 0 };
   }
 
+  // 操作軸對齊「出生側」固定鏡頭，不跟角色繞場轉
   const localId = partyStore.localParticipantId;
   const local = props.snapshot.fighters.find((fighter) => fighter.id === localId);
-  let radialX = 0;
-  let radialZ = 1;
+  const spawnSlot = local?.spawnSlot
+    ?? (props.snapshot.localSpawnSlot >= 0 ? props.snapshot.localSpawnSlot : 0);
+  const spawn = getBumpCornerSpawn(
+    spawnSlot,
+    Math.max(props.snapshot.fighters.length, partyStore.participants.length, 1),
+  );
+  let radialX = spawn.x;
+  let radialZ = spawn.z;
+  let radialDist = Math.hypot(radialX, radialZ);
 
-  if (local) {
-    radialX = local.x;
-    radialZ = local.z;
-    let radialDist = Math.hypot(radialX, radialZ);
-
-    if (radialDist < 0.45) {
-      radialX = -local.facingX;
-      radialZ = -local.facingZ;
-      radialDist = Math.hypot(radialX, radialZ);
-    }
-
-    if (radialDist < 0.001) {
-      const spawn = getBumpCornerSpawn(
-        local.spawnSlot,
-        Math.max(partyStore.participants.length, 1),
-      );
-      radialX = -spawn.facingX;
-      radialZ = -spawn.facingZ;
-      radialDist = 1;
-    }
-
-    radialX /= radialDist;
-    radialZ /= radialDist;
-  } else {
-    const spawn = getBumpCornerSpawn(
-      props.snapshot.localSpawnSlot >= 0 ? props.snapshot.localSpawnSlot : 0,
-      Math.max(partyStore.participants.length, 1),
-    );
+  if (radialDist < 0.001) {
     radialX = -spawn.facingX;
     radialZ = -spawn.facingZ;
+    radialDist = Math.hypot(radialX, radialZ) || 1;
   }
 
-  // 鏡頭在外側：W＝往台心，D＝螢幕右
+  radialX /= radialDist;
+  radialZ /= radialDist;
+
+  // 鏡頭在出生外側：W＝往台心，D＝螢幕右
   const forwardX = -radialX;
   const forwardZ = -radialZ;
   const rightX = -radialZ;

@@ -4,6 +4,19 @@ import {
 } from '@/common/party/team-split';
 import type { MiniGameInstance } from '@/minigames/types';
 import {
+  VB_COURT_HALF_DEPTH as COURT_HALF_DEPTH,
+  VB_COURT_HALF_WIDTH as COURT_HALF_WIDTH,
+  VB_GRAVITY as GRAVITY,
+  VB_HIT_LIFT_Y as HIT_LIFT_Y,
+  VB_NET_BOTTOM_Y as NET_BOTTOM_Y,
+  VB_NET_THICKNESS as NET_THICKNESS,
+  VB_NET_TOP_Y as NET_TOP_Y,
+  vbClampOpponentAim,
+  vbClampOwnAim,
+  vbComputeLaunchOverNet,
+  vbPredictLandTimeSec,
+} from '@/minigames/volleyball/volleyball-aim';
+import {
   VB_BALL_RADIUS,
   VB_CPU_SOLID_CONTACT,
   VB_HITBOX_LOCAL_REACH_BONUS,
@@ -28,24 +41,11 @@ import type { PlayerInput } from '@/types/player-input';
 const SCORE_TO_WIN = 5;
 /** 終局須領先至少兩分（沙排／派對對齊） */
 const WIN_BY = 2;
-/** 放大半場：跑位要喘，深角才有威脅 */
-const COURT_HALF_WIDTH = 7.0;
-const COURT_HALF_DEPTH = 9.6;
-const NET_THICKNESS = 0.12;
-/** 對齊場景懸空網（volleyball-scene netBottomY / netTopY） */
-const NET_BOTTOM_Y = 0.95;
-const NET_TOP_Y = 2.0;
-/** 過網時球心至少要高過網帶這麼多 */
-const NET_CLEAR_Y = NET_TOP_Y + 0.28;
 /** 接球過網：球心過網心即可（本機手感，勿加嚴） */
 const CROSSED_NET_MIN_OWN_Z = NET_THICKNESS;
-/** 重力略重一點，弧線別掛太久變成無限對敲 */
-const GRAVITY = 12.2;
 const MOVE_SPEED = 6.2;
 /** 跳躍殺球再高一點，摸球點才像扣殺 */
 const JUMP_SPEED = 7.6;
-/** 擊球瞬間球心高度（站立托／墊） */
-const HIT_LIFT_Y = 1.15;
 const MAX_TOUCHES = 3;
 const POINT_PAUSE_MS = 1200;
 /** 殺球落地炸飛：多留一點時間看特效 */
@@ -984,7 +984,7 @@ export class VolleyballGame implements MiniGameInstance {
     this.tryCpuEmergencyReturn();
 
     const didHit = this.hitSerial > hitSerialBefore;
-    const landSec = this.predictLandTimeSec(this.ball.y, this.ball.vy);
+    const landSec = vbPredictLandTimeSec(this.ball.y, this.ball.vy);
     const predictedLandZ = this.ball.z + this.ball.vz * landSec;
     const fliesToOpponent = side < 0
       ? this.ball.vz > 0.8 && predictedLandZ > 0.5
@@ -1111,10 +1111,8 @@ export class VolleyballGame implements MiniGameInstance {
           VB_BALL_RADIUS,
         );
 
-      const land = {
-        x: clamp(raw.x, -COURT_HALF_WIDTH + 0.4, COURT_HALF_WIDTH - 0.4),
-        z: clamp(raw.z, -COURT_HALF_DEPTH + 0.4, COURT_HALF_DEPTH - 0.4),
-      };
+      // 不 clamp：出界落點要讓地上圈與界外判定一致
+      const land = { x: raw.x, z: raw.z };
 
       if (this.phase === 'serve') {
         const server = this.players.find((player) => player.id === this.servingPlayerId)
@@ -2046,50 +2044,6 @@ export class VolleyballGame implements MiniGameInstance {
     return Boolean(local && local.teamId !== player.teamId && player.id !== this.localPlayerId);
   }
 
-  /** 對方半場＋場外緩衝都可瞄（出界機制才有意義）；不可瞄回己方 */
-  private clampOpponentAim(
-    side: number,
-    aimX: number,
-    aimZ: number,
-  ): { x: number; z: number } {
-    const minClear = NET_THICKNESS + 1.5;
-    const outPad = 2.8;
-
-    return {
-      x: clamp(aimX, -(COURT_HALF_WIDTH + outPad), COURT_HALF_WIDTH + outPad),
-      z: side < 0
-        ? clamp(aimZ, minClear, COURT_HALF_DEPTH + outPad)
-        : clamp(aimZ, -(COURT_HALF_DEPTH + outPad), -minClear),
-    };
-  }
-
-  /** 把滑鼠落點夾到己方半場（舉球用） */
-  private clampOwnAim(
-    side: number,
-    aimX: number,
-    aimZ: number,
-  ): { x: number; z: number } {
-    return {
-      x: clamp(aimX, -COURT_HALF_WIDTH + 0.9, COURT_HALF_WIDTH - 0.9),
-      z: clamp(
-        aimZ,
-        side < 0 ? -COURT_HALF_DEPTH + 1.2 : NET_THICKNESS + 1.2,
-        side < 0 ? -NET_THICKNESS - 1.2 : COURT_HALF_DEPTH - 1.2,
-      ),
-    };
-  }
-
-  /** 依目前 y／vy 算出實際落地秒數（水平速度要用這個，才會對準落點） */
-  private predictLandTimeSec(startY: number, launchVy: number): number {
-    const disc = launchVy * launchVy - 2 * GRAVITY * (VB_BALL_RADIUS - startY);
-
-    if (disc <= 0 || GRAVITY <= 0) {
-      return 0.7;
-    }
-
-    return Math.max(0.35, (launchVy + Math.sqrt(disc)) / GRAVITY);
-  }
-
   /**
    * 過網球：
    * 1. 起點留在觸球位置（禁止瞬移到網前）
@@ -2103,117 +2057,30 @@ export class VolleyballGame implements MiniGameInstance {
     flightSec: number,
     loft: number,
     targetZOverride?: number,
-    options?: { fast?: boolean; forceInBounds?: boolean },
+    options?: { fast?: boolean; forceInBounds?: boolean; contactY?: number },
   ): void {
-    const fast = Boolean(options?.fast);
-    const forceInBounds = Boolean(options?.forceInBounds);
-    const oppClear = NET_THICKNESS + 2.2;
-    const outPad = 2.8;
-    // 殺球：剛過網頂即可（比一般墊球低），但仍要穩過網帶
-    const clearY = fast ? NET_TOP_Y + 0.12 : NET_CLEAR_Y;
-    const minLandSec = fast ? 0.28 : 0.48;
+    const targetZ = targetZOverride ?? this.opponentLandZ(side, landDepth);
+    const launch = vbComputeLaunchOverNet({
+      side,
+      targetX,
+      targetZ,
+      ballX: this.ball.x,
+      ballY: this.ball.y,
+      ballZ: this.ball.z,
+      flightSec,
+      loft,
+      fast: options?.fast,
+      forceInBounds: options?.forceInBounds,
+      contactY: options?.contactY,
+    });
 
-    // 起點：保留觸球點；若球已偏到網外才拉回己方
-    const startZ = side < 0
-      ? Math.min(this.ball.z, -NET_THICKNESS - 0.2)
-      : Math.max(this.ball.z, NET_THICKNESS + 0.2);
-    this.ball.z = startZ;
-    this.ball.prevZ = startZ;
-
-    const startY = Math.max(this.ball.y, HIT_LIFT_Y);
-    this.ball.y = startY;
-    this.ball.x = clamp(this.ball.x, -COURT_HALF_WIDTH + 0.5, COURT_HALF_WIDTH - 0.5);
-
-    const duration = clamp(flightSec, fast ? 0.28 : 0.48, fast ? 0.55 : 1.25);
-    this.ball.vy = (VB_BALL_RADIUS - startY) / duration + 0.5 * GRAVITY * duration + Math.max(0, loft);
-
-    let targetZ = targetZOverride ?? this.opponentLandZ(side, landDepth);
-    let aimOut = !forceInBounds
-      && (
-        Math.abs(targetX) > COURT_HALF_WIDTH
-        || Math.abs(targetZ) > COURT_HALF_DEPTH
-      );
-
-    if (aimOut) {
-      // 故意／瞄到界外：保留出界落點，只限最大場外距離
-      if (side < 0) {
-        targetZ = clamp(Math.max(targetZ, oppClear), oppClear, COURT_HALF_DEPTH + outPad);
-      } else {
-        targetZ = clamp(Math.min(targetZ, -oppClear), -(COURT_HALF_DEPTH + outPad), -oppClear);
-      }
-    } else if (side < 0) {
-      targetZ = clamp(Math.max(targetZ, oppClear), oppClear, COURT_HALF_DEPTH - 0.35);
-    } else {
-      targetZ = clamp(Math.min(targetZ, -oppClear), -COURT_HALF_DEPTH + 0.35, -oppClear);
-    }
-
-    const targetXClamped = aimOut
-      ? clamp(targetX, -(COURT_HALF_WIDTH + outPad), COURT_HALF_WIDTH + outPad)
-      : clamp(targetX, -COURT_HALF_WIDTH + 0.35, COURT_HALF_WIDTH - 0.35);
-
-    // 先對準落點，再抬高 vy 直到過網淨空夠
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      const landSec = Math.max(minLandSec, this.predictLandTimeSec(startY, this.ball.vy));
-      this.ball.vx = (targetXClamped - this.ball.x) / landSec;
-      this.ball.vz = (targetZ - startZ) / landSec;
-
-      if (fast) {
-        const horizontal = Math.hypot(this.ball.vx, this.ball.vz);
-        const maxHorizontal = 19.5;
-
-        if (horizontal > maxHorizontal) {
-          const scale = maxHorizontal / horizontal;
-          this.ball.vx *= scale;
-          this.ball.vz *= scale;
-        }
-      }
-
-      const crossesToOpponent = side < 0
-        ? this.ball.vz > 0.8 && startZ + this.ball.vz * landSec >= oppClear
-        : this.ball.vz < -0.8 && startZ + this.ball.vz * landSec <= -oppClear;
-
-      if (!crossesToOpponent) {
-        const forcedZ = side < 0 ? oppClear + 0.8 : -(oppClear + 0.8);
-        this.ball.vz = (forcedZ - startZ) / landSec;
-        this.ball.vx = (targetXClamped - this.ball.x) / landSec;
-      }
-
-      const tNet = -startZ / this.ball.vz;
-      if (tNet <= 0) {
-        break;
-      }
-
-      // 限速後過網時間可能晚於落地預測：仍要抬高，不能直接放棄
-      if (tNet >= landSec) {
-        if (!fast) {
-          break;
-        }
-
-        this.ball.vy += 0.55;
-        continue;
-      }
-
-      const yAtNet = tNet <= 0.05
-        ? startY
-        : startY + this.ball.vy * tNet - 0.5 * GRAVITY * tNet * tNet;
-      if (yAtNet >= clearY) {
-        break;
-      }
-
-      this.ball.vy += fast ? 0.48 : 0.55;
-    }
-
-    // 歐拉積分比解析略矮：殺球最後再保證過網頂有餘裕
-    if (fast && Math.abs(this.ball.vz) > 0.05) {
-      const tNet = -startZ / this.ball.vz;
-      if (tNet > 0 && tNet < 1.2) {
-        const yAtNet = startY + this.ball.vy * tNet - 0.5 * GRAVITY * tNet * tNet;
-        const needY = NET_TOP_Y + 0.18;
-        if (yAtNet < needY) {
-          this.ball.vy += (needY - yAtNet) / tNet + 0.35;
-        }
-      }
-    }
+    this.ball.x = launch.startX;
+    this.ball.y = launch.startY;
+    this.ball.z = launch.startZ;
+    this.ball.prevZ = launch.startZ;
+    this.ball.vx = launch.vx;
+    this.ball.vy = launch.vy;
+    this.ball.vz = launch.vz;
   }
 
   /** 觸球瞬間微調球位（禁止大距離瞬移，那才是隔空感的來源） */
@@ -2257,7 +2124,7 @@ export class VolleyballGame implements MiniGameInstance {
 
       if (hasAim) {
         // 滑鼠點己方落點：舉到該處（通常點在隊友附近）
-        const aimed = this.clampOwnAim(side, player.aimX!, player.aimZ!);
+        const aimed = vbClampOwnAim(side, player.aimX!, player.aimZ!);
         targetX = aimed.x;
         targetZ = aimed.z;
       } else if (teammate) {
@@ -2288,7 +2155,7 @@ export class VolleyballGame implements MiniGameInstance {
       this.ball.prevZ = this.ball.z;
       const duration = hasAim ? 1.1 : 1.15;
       this.ball.vy = (VB_BALL_RADIUS - startY) / duration + 0.5 * GRAVITY * duration + (hasAim ? 0.6 : 1.15);
-      const landSec = this.predictLandTimeSec(startY, this.ball.vy);
+      const landSec = vbPredictLandTimeSec(startY, this.ball.vy);
       this.ball.vx = (targetX - this.ball.x) / landSec;
       this.ball.vz = (targetZ - this.ball.z) / landSec;
       player.aimX = null;
@@ -2302,15 +2169,13 @@ export class VolleyballGame implements MiniGameInstance {
     const easyAim = this.isOpponentCpuPlayer(player);
 
     if (kind === 'spike' && !isServe) {
-      // 跳躍殺球：接觸點抬高，短平快過網再砸地（別掛太久好接）
-      if (player.y > 0.12) {
-        this.ball.y = Math.max(this.ball.y, Math.min(player.y + 1.1, 3.35));
-      }
-
-      const spikeOpts = { fast: true } as const;
+      const spikeOpts = {
+        fast: true,
+        contactY: player.y,
+      } as const;
 
       if (hasAim) {
-        const aimed = this.clampOpponentAim(side, player.aimX!, player.aimZ!);
+        const aimed = vbClampOpponentAim(side, player.aimX!, player.aimZ!);
         this.launchOverNet(
           side,
           aimed.x,
@@ -2341,10 +2206,10 @@ export class VolleyballGame implements MiniGameInstance {
 
     // 擊球／發球：比以前更快更平，仍比殺球慢
     if (hasAim && !isServe) {
-      const aimed = this.clampOpponentAim(side, player.aimX!, player.aimZ!);
+      const aimed = vbClampOpponentAim(side, player.aimX!, player.aimZ!);
       this.launchOverNet(side, aimed.x, Math.abs(aimed.z), 0.82, 1.15, aimed.z);
     } else if (hasAim && isServe) {
-      const aimed = this.clampOpponentAim(side, player.aimX!, player.aimZ!);
+      const aimed = vbClampOpponentAim(side, player.aimX!, player.aimZ!);
       this.launchOverNet(side, aimed.x, Math.abs(aimed.z), 1.05, 1.75, aimed.z);
     } else {
       const spot = this.pickOpenOpponentLandSpot(

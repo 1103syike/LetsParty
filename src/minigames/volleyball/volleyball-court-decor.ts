@@ -6,10 +6,14 @@ import {
 } from '@babylonjs/core';
 
 import { createQuaterniusFlatMaterial } from '@/common/quaternius/quaternius-materials';
+import {
+  VB_COURT_HALF_DEPTH,
+  VB_COURT_HALF_WIDTH,
+} from '@/minigames/volleyball/volleyball-aim';
 
-/** 對齊物理半場 6.0 × 8.4 */
-const HALF_W = 6.0;
-const HALF_D = 8.4;
+/** 對齊物理半場 */
+const HALF_W = VB_COURT_HALF_WIDTH;
+const HALF_D = VB_COURT_HALF_DEPTH;
 
 // 對齊 design token，但場景刻意加深一階（淺色會糊成一團）
 const COL = {

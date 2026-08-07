@@ -24,6 +24,14 @@ import { createQuaterniusFlatMaterial } from '@/common/quaternius/quaternius-mat
 import { useBabylonScene } from '@/composables/use-babylon-scene';
 import { volleyballCopy } from '@/minigames/volleyball/locales/zh-TW';
 import type { VolleyballSnapshot } from '@/minigames/volleyball/volleyball';
+import {
+  VB_COURT_HALF_DEPTH,
+  VB_COURT_HALF_WIDTH,
+  vbIsOutOfBounds,
+  vbResolveAimLand,
+  vbTeamSideSign,
+  type VbAimHitKind,
+} from '@/minigames/volleyball/volleyball-aim';
 import { addVolleyballCourtDecor } from '@/minigames/volleyball/volleyball-court-decor';
 import { VolleyballHitFx } from '@/minigames/volleyball/volleyball-hit-fx';
 import { VolleyballSpikeFx } from '@/minigames/volleyball/volleyball-spike-fx';
@@ -102,9 +110,9 @@ function createCourt(scene: Scene): void {
     Color3.FromHexString('#c9964a'),
   );
 
-  // 對齊物理半場（volleyball.ts COURT_HALF_*）：紅方 z<0、藍方 z>0
-  const courtWidth = 14.2;
-  const halfDepth = 9.7;
+  // 對齊物理半場（volleyball-aim COURT_HALF_*）：紅方 z<0、藍方 z>0
+  const courtWidth = VB_COURT_HALF_WIDTH * 2;
+  const halfDepth = VB_COURT_HALF_DEPTH;
   const courtY = 0.01;
   /** 點選可到場外一圈，才能瞄出界 */
   const pickPad = 3.0;
@@ -382,6 +390,12 @@ function updateLandMarker(snapshot: VolleyballSnapshot): void {
   landMarkerMesh.position.z = land.z;
   landMarkerMesh.setEnabled(true);
 
+  // 會出界：warning；場內維持預設藍
+  const out = vbIsOutOfBounds(land.x, land.z);
+  const hex = out ? '#e8b86d' : '#6ba8e8';
+  landMarkerMat.diffuseColor = Color3.FromHexString(hex);
+  landMarkerMat.emissiveColor = Color3.FromHexString(hex).scale(out ? 1.35 : 1.15);
+
   // 地上時機圓環：最佳擊球窗收攏
   hitFx?.sync(land, snapshot.hitTiming);
 }
@@ -407,7 +421,26 @@ function pickCourtPoint(scene: Scene): { x: number; z: number } | null {
   };
 }
 
-function updateAimMarker(point: { x: number; z: number } | null): void {
+/** 依半場／按鍵推估這次出手種類（右鍵按住＝殺球預覽） */
+function resolveHoverHitKind(
+  aimZ: number,
+  buttons: number,
+): VbAimHitKind {
+  const teamId = props.snapshot.localTeamId;
+  const isOwn = teamId === 'b' ? aimZ > 0.12 : aimZ < -0.12;
+
+  if (isOwn) {
+    return 'set';
+  }
+
+  // buttons bit1 = 右鍵
+  return (buttons & 2) !== 0 ? 'spike' : 'bump';
+}
+
+function updateAimMarker(
+  point: { x: number; z: number } | null,
+  buttons = 0,
+): void {
   if (!aimMarkerMesh || !aimMarkerMat) {
     return;
   }
@@ -423,16 +456,35 @@ function updateAimMarker(point: { x: number; z: number } | null): void {
   }
 
   const teamId = props.snapshot.localTeamId;
-  const isOwn = teamId === 'b' ? point.z > 0.12 : point.z < -0.12;
-  // 物理場界（對齊 COURT_HALF 7.0 / 9.6）：界外用 warning 提示可能出界
-  const isOut = Math.abs(point.x) > 7.0 || Math.abs(point.z) > 9.6;
-  // 己方：player-4；對方：player-1；界外：warning
-  const hex = isOut ? '#e8b86d' : isOwn ? '#7ecf9a' : '#e86b8a';
+
+  if (!teamId) {
+    aimMarkerMesh.setEnabled(false);
+    return;
+  }
+
+  const local = props.snapshot.players.find(
+    (entry) => entry.id === props.snapshot.localPlayerId,
+  );
+  const kind = resolveHoverHitKind(point.z, buttons);
+  const land = vbResolveAimLand({
+    kind,
+    side: vbTeamSideSign(teamId),
+    aimX: point.x,
+    aimZ: point.z,
+    ballX: props.snapshot.ball.x,
+    ballY: props.snapshot.ball.y,
+    ballZ: props.snapshot.ball.z,
+    hitterY: local?.y ?? 0,
+  });
+
+  const isOwn = kind === 'set';
+  // 己方：player-4；對方：player-1；界外：warning（看實際落點，不是滑鼠原始點）
+  const hex = land.isOut ? '#e8b86d' : isOwn ? '#7ecf9a' : '#e86b8a';
   aimMarkerMat.diffuseColor = Color3.FromHexString(hex);
-  aimMarkerMat.emissiveColor = Color3.FromHexString(hex).scale(isOut ? 1.35 : 1.2);
+  aimMarkerMat.emissiveColor = Color3.FromHexString(hex).scale(land.isOut ? 1.35 : 1.2);
   aimMarkerMat.alpha = 0.92;
-  aimMarkerMesh.position.x = point.x;
-  aimMarkerMesh.position.z = point.z;
+  aimMarkerMesh.position.x = land.x;
+  aimMarkerMesh.position.z = land.z;
   aimMarkerMesh.setEnabled(true);
 }
 
@@ -455,9 +507,10 @@ function bindCourtPointer(scene: Scene): void {
     }
 
     const point = pickCourtPoint(scene);
+    const buttons = info.event.buttons;
 
     if (info.type === PointerEventTypes.POINTERMOVE) {
-      updateAimMarker(point);
+      updateAimMarker(point, buttons);
 
       if (point) {
         emit('courtAim', point);
@@ -474,7 +527,8 @@ function bindCourtPointer(scene: Scene): void {
     }
 
     info.event.preventDefault();
-    updateAimMarker(point);
+    // 右鍵當下 buttons 可能尚未含 bit1，強制用殺球預覽
+    updateAimMarker(point, button === 2 ? 2 : buttons);
     emit('courtClick', { x: point.x, z: point.z, button });
   });
 }

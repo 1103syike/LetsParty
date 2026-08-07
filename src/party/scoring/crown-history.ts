@@ -36,8 +36,18 @@ export function getCrownHistoryRoundCount(history: CrownHistory): number {
   return Math.max(0, maxLength - 1);
 }
 
+/** 取某局累積皇冠；缺資料時用最後一筆 */
+export function crownsAt(timeline: number[], round: number): number {
+  if (timeline.length === 0) {
+    return 0;
+  }
+
+  const index = Math.max(0, Math.min(round, timeline.length - 1));
+  return timeline[index] ?? 0;
+}
+
 /**
- * 測試用：刻意做出多段同分，方便驗走勢圖頭像堆疊。
+ * 測試用假資料：多段升降，方便預覽折線走勢。
  * 最終約略：P1 最高、P2/P3 並列、P4 較低。
  */
 export function createTiedCrownHistoryDemo(participants: Participant[]): CrownHistory {

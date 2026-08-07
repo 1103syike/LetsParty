@@ -104,6 +104,7 @@ export const usePartyStore = defineStore('party', {
           maxRounds: this.settings.maxRounds,
           enabledMiniGameIds: [...this.settings.enabledMiniGameIds],
         },
+        crownHistory: this.crownHistory,
       };
     },
   },
@@ -179,7 +180,11 @@ export const usePartyStore = defineStore('party', {
         this.localParticipantId = snapshot.yourParticipantId;
       }
 
-      this.crownHistory = createInitialCrownHistory(this.participants);
+      // 採用 Host 的走勢；缺欄（舊客戶端）才重建起點
+      this.crownHistory = snapshot.crownHistory
+        && Object.keys(snapshot.crownHistory).length > 0
+        ? snapshot.crownHistory
+        : createInitialCrownHistory(this.participants);
       this.connectionStatus = 'connected';
       this.connectionError = null;
     },
